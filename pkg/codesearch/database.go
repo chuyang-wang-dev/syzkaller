@@ -24,20 +24,23 @@ type Database struct {
 }
 
 type Definition struct {
-	Name     string      `json:"name,omitempty"`
-	Type     string      `json:"type,omitempty"`
-	Kind     EntityKind  `json:"kind,omitempty"`
-	IsStatic bool        `json:"is_static,omitempty"`
-	Body     LineRange   `json:"body,omitzero"`
-	Comment  LineRange   `json:"comment,omitzero"`
-	Refs     []Reference `json:"refs,omitempty"`
-	Fields   []FieldInfo `json:"fields,omitempty"`
+	Name      string      `json:"name,omitempty"`
+	Type      string      `json:"type,omitempty"`
+	Signature string      `json:"signature,omitempty"`
+	Kind      EntityKind  `json:"kind,omitempty"`
+	IsStatic  bool        `json:"is_static,omitempty"`
+	Body      LineRange   `json:"body,omitzero"`
+	Comment   LineRange   `json:"comment,omitzero"`
+	Refs      []Reference `json:"refs,omitempty"`
+	Fields    []FieldInfo `json:"fields,omitempty"`
 }
 
 type FieldInfo struct {
 	Name       string `json:"name,omitempty"`
 	OffsetBits uint64 `json:"offset"`
 	SizeBits   uint64 `json:"size"`
+	Type       string `json:"type,omitempty"`
+	Signature  string `json:"signature,omitempty"`
 }
 
 type Reference struct {
@@ -65,6 +68,7 @@ const (
 	EntityKindEnum
 	EntityKindTypedef
 	EntityKindField
+	EntityKindSignature
 	entityKindLast
 )
 
@@ -77,6 +81,7 @@ var entityKindNames = [...]string{
 	EntityKindEnum:           "enum",
 	EntityKindTypedef:        "typedef",
 	EntityKindField:          "field",
+	EntityKindSignature:      "signature",
 }
 
 var entityKindBytes = func() [entityKindLast][]byte {
@@ -112,6 +117,7 @@ const (
 	refKindInvalid RefKind = iota
 	RefKindUses
 	RefKindCall
+	RefKindIndirectCall
 	RefKindRead
 	RefKindWrite
 	RefKindTakesAddr
@@ -119,11 +125,12 @@ const (
 )
 
 var refKindNames = [...]string{
-	RefKindUses:      "uses",
-	RefKindCall:      "calls",
-	RefKindRead:      "reads",
-	RefKindWrite:     "writes",
-	RefKindTakesAddr: "takes-address-of",
+	RefKindUses:         "uses",
+	RefKindCall:         "calls",
+	RefKindIndirectCall: "indirectly-calls",
+	RefKindRead:         "reads",
+	RefKindWrite:        "writes",
+	RefKindTakesAddr:    "takes-address-of",
 }
 
 var refKindBytes = func() [refKindLast][]byte {
@@ -159,7 +166,7 @@ func (v *RefKind) UnmarshalJSON(data []byte) error {
 var DatabaseFormatHash = func() string {
 	// Semantic version should be bumped when the schema does not change,
 	// but stored values changes.
-	const semanticVersion = "4"
+	const semanticVersion = "5"
 	schema, err := jsonschema.For[Database](nil)
 	if err != nil {
 		panic(err)
@@ -186,6 +193,7 @@ func (db *Database) Merge(other *Database, v *clangtool.Verifier) {
 		}
 		db.intern(&def.Name)
 		db.intern(&def.Type)
+		db.intern(&def.Signature)
 		db.intern(&def.Body.File)
 		db.intern(&def.Comment.File)
 		for i := range def.Refs {
@@ -193,6 +201,8 @@ func (db *Database) Merge(other *Database, v *clangtool.Verifier) {
 		}
 		for i := range def.Fields {
 			db.intern(&def.Fields[i].Name)
+			db.intern(&def.Fields[i].Type)
+			db.intern(&def.Fields[i].Signature)
 		}
 	}
 }

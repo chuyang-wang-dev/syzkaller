@@ -7,6 +7,7 @@ package codesearcher
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/syzkaller/pkg/aflow"
 	"github.com/google/syzkaller/pkg/clangtool"
@@ -61,8 +62,18 @@ a field in the output, it is NOT present in the struct definition
 You can strictly trust the response to be complete and accurate.
 `)
 
+	ToolIndirectTargets = aflow.NewFuncTool("codesearch-indirect-targets", indirectTargets, `
+Tool finds all functions that could be called by an indirect call matching a specific signature.
+You can provide either a raw signature (e.g. "void (int)") or a struct field (e.g. "struct ops::do_work").
+`)
+
+	ToolIndirectCallers = aflow.NewFuncTool("codesearch-indirect-callers", indirectCallers, `
+Tool finds all locations where an indirect call matching a specific signature is made.
+You can provide either a raw signature (e.g. "void (int)") or a function name.
+`)
+
 	Tools = []aflow.Tool{ToolDirIndex, ToolReadFile, ToolFileIndex, ToolDefinitionComment,
-		ToolDefinitionSource, ToolFindReferences, ToolStructLayout}
+		ToolDefinitionSource, ToolFindReferences, ToolStructLayout, ToolIndirectTargets, ToolIndirectCallers}
 )
 
 // PrepareIndex is an action that needs to run before any agents that use codesearch tools.
@@ -237,6 +248,8 @@ type structLayoutField struct {
 	Name       string `jsonschema:"Name of the field."`
 	OffsetBits uint64 `jsonschema:"Offset of the field in bits."`
 	SizeBits   uint64 `jsonschema:"Size of the field in bits."`
+	Type       string `jsonschema:"Type of the field." json:",omitempty"`
+	Signature  string `jsonschema:"If the field is a function pointer, its canonical signature." json:",omitempty"`
 }
 
 func structLayout(ctx *aflow.Context, state prepareResult, args structLayoutArgs) (structLayoutResult, error) {
@@ -250,7 +263,81 @@ func structLayout(ctx *aflow.Context, state prepareResult, args structLayoutArgs
 			Name:       f.Name,
 			OffsetBits: f.OffsetBits,
 			SizeBits:   f.SizeBits,
+			Type:       f.Type,
+			Signature:  f.Signature,
 		})
 	}
 	return res, nil
+}
+
+type indirectTargetsArgs struct {
+	ContextFile string `jsonschema:"Source file path that references the entity." json:",omitempty"`
+	Name        string `jsonschema:"Name of the entity of interest. e.g. 'ops::do_work' or 'void (int)'."`
+}
+
+type indirectTargetsResult struct {
+	Targets []string `jsonschema:"List of functions that match the signature and have their address taken."`
+}
+
+func indirectTargets(ctx *aflow.Context, state prepareResult, args indirectTargetsArgs) (
+	indirectTargetsResult, error) {
+	signature := args.Name
+	if strings.Contains(args.Name, "::") {
+		parts := strings.Split(args.Name, "::")
+		if len(parts) == 2 {
+			fields, err := state.Index.GetStructLayout(args.ContextFile, parts[0], nil)
+			if err == nil {
+				for _, f := range fields {
+					if f.Name == parts[1] && f.Signature != "" {
+						signature = f.Signature
+						break
+					}
+				}
+			}
+		}
+	}
+	targets, err := state.Index.FindIndirectTargets(signature)
+	if err != nil {
+		return indirectTargetsResult{}, err
+	}
+	return indirectTargetsResult{Targets: targets}, nil
+}
+
+type indirectCallersArgs struct {
+	ContextFile         string `jsonschema:"Source file path that references the entity." json:",omitempty"`
+	Name                string `jsonschema:"Name of the entity of interest. Function name or 'void (int)'."`
+	SourceTreePrefix    string `jsonschema:"Prefix to restrict search. Empty finds all." json:",omitempty"`
+	IncludeSnippetLines uint   `jsonschema:"Number of lines of context for source code snippets." json:",omitempty"`
+}
+
+type indirectCallersResult struct {
+	TruncatedOutput bool                       `jsonschema:"Set if output was truncated."`
+	References      []codesearch.ReferenceInfo `jsonschema:"List of requested references."`
+}
+
+func indirectCallers(ctx *aflow.Context, state prepareResult, args indirectCallersArgs) (
+	indirectCallersResult, error) {
+	signature := args.Name
+	if !strings.Contains(args.Name, "(") {
+		info, err := state.Index.DefinitionSource(args.ContextFile, args.Name)
+		if err == nil && info != nil && info.Signature != "" {
+			signature = info.Signature
+		}
+	}
+
+	outputLimit := 20
+	if args.IncludeSnippetLines == 0 {
+		outputLimit = 1000
+	} else if args.IncludeSnippetLines < 10 {
+		outputLimit = 100
+	}
+	refs, totalCount, err := state.Index.FindIndirectCallSites(
+		signature, args.SourceTreePrefix, int(args.IncludeSnippetLines), outputLimit)
+	if err != nil {
+		return indirectCallersResult{}, err
+	}
+	return indirectCallersResult{
+		TruncatedOutput: totalCount > len(refs),
+		References:      refs,
+	}, nil
 }
