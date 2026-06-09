@@ -282,6 +282,18 @@ func (index *Index) DefinitionSource(contextFile, name string) (*EntityInfo, err
 	return index.definitionSource(contextFile, name, false)
 }
 
+func (index *Index) FindFunctionAtLine(file string, line int) (*EntityInfo, error) {
+	for _, def := range index.db.Definitions {
+		if def.Body.File != file || def.Kind != EntityKindFunction {
+			continue
+		}
+		if int(def.Body.StartLine) <= line && int(def.Body.EndLine) >= line {
+			return index.definitionSource(file, def.Name, false)
+		}
+	}
+	return nil, fmt.Errorf("no function found at line %v in file %v", line, file)
+}
+
 func (index *Index) definitionSource(contextFile, name string, comment bool) (*EntityInfo, error) {
 	def := index.findDefinition(contextFile, name)
 	if def == nil {

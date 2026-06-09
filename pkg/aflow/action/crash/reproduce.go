@@ -234,6 +234,7 @@ type cachedExecution struct {
 	FaultInjection string
 	Error          string
 	Coverage       [][]symbolizer.Frame
+	CallErrors     []int32
 }
 
 func LoadCoverage(ctx *aflow.Context, cachedID string) ([][]symbolizer.Frame, error) {
@@ -242,6 +243,14 @@ func LoadCoverage(ctx *aflow.Context, cachedID string) ([][]symbolizer.Frame, er
 		return nil, err
 	}
 	return cached.Coverage, nil
+}
+
+func LoadCallErrors(ctx *aflow.Context, cachedID string) ([]int32, error) {
+	cached, err := aflow.RetrieveObject[cachedExecution](ctx, cachedID)
+	if err != nil {
+		return nil, err
+	}
+	return cached.CallErrors, nil
 }
 
 func buildConfig(args ReproduceArgs, workdir string) (*mgrconfig.Config, error) {
