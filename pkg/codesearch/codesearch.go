@@ -267,6 +267,7 @@ func (index *Index) FileIndex(file string) ([]Entity, error) {
 }
 
 type EntityInfo struct {
+	Name      string
 	File      string
 	Kind      string
 	Body      string
@@ -295,6 +296,7 @@ func (index *Index) definitionSource(contextFile, name string, comment bool) (*E
 		return nil, err
 	}
 	return &EntityInfo{
+		Name:      def.Name,
 		File:      def.Body.File,
 		Kind:      def.Kind.String(),
 		Body:      src,

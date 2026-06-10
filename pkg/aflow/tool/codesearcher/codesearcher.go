@@ -270,6 +270,61 @@ func structLayout(ctx *aflow.Context, state prepareResult, args structLayoutArgs
 	return res, nil
 }
 
+type extractFunctionArgs struct {
+	Index index
+	File  string `jsonschema:"Source file path."`
+	Line  int    `jsonschema:"Line number in the file."`
+}
+
+type extractFunctionResult struct {
+	FunctionName   string `jsonschema:"Name of the function."`
+	FunctionSource string `jsonschema:"Source code of the function."`
+}
+
+func extractFunction(ctx *aflow.Context, args extractFunctionArgs) (extractFunctionResult, error) {
+	info, err := args.Index.FindFunctionAtLine(args.File, args.Line)
+	if err != nil {
+		return extractFunctionResult{}, err
+	}
+	return extractFunctionResult{FunctionName: info.Name, FunctionSource: info.Body}, nil
+}
+
+type extractIndirectCallersArgs struct {
+	Index        index
+	FunctionName string
+}
+
+type extractIndirectCallersResult struct {
+	IndirectCallers string
+}
+
+func extractIndirectCallers(ctx *aflow.Context, args extractIndirectCallersArgs) (extractIndirectCallersResult, error) {
+	if args.FunctionName == "" {
+		return extractIndirectCallersResult{}, nil
+	}
+
+	refs, totalCount, err := getIndirectCallSites(args.Index, "", args.FunctionName, "", 2, 10)
+	if err != nil || totalCount == 0 {
+		return extractIndirectCallersResult{}, nil
+	}
+
+	b := new(strings.Builder)
+	fmt.Fprintf(b, "Function %v is called indirectly at %v locations", args.FunctionName, totalCount)
+	if totalCount > len(refs) {
+		fmt.Fprintf(b, " (showing %v)", len(refs))
+	}
+	fmt.Fprintf(b, ":\n\n")
+	for _, ref := range refs {
+		fmt.Fprintf(b, "%v %v it at %v:%v\n%v\n\n",
+			ref.ReferencingEntityKind, ref.ReferencingEntityName,
+			ref.SourceFile, ref.SourceLine, ref.SourceSnippet)
+	}
+	return extractIndirectCallersResult{IndirectCallers: strings.TrimSpace(b.String())}, nil
+}
+
+var ActionExtractFunction = aflow.NewFuncAction("codesearch-extract-function", extractFunction)
+var ActionExtractIndirectCallers = aflow.NewFuncAction("codesearch-extract-indirect-callers", extractIndirectCallers)
+
 type indirectTargetsArgs struct {
 	ContextFile string `jsonschema:"Source file path that references the entity." json:",omitempty"`
 	Name        string `jsonschema:"Name of the entity of interest. e.g. 'ops::do_work' or 'void (int)'."`
@@ -315,24 +370,33 @@ type indirectCallersResult struct {
 	References      []codesearch.ReferenceInfo `jsonschema:"List of requested references."`
 }
 
-func indirectCallers(ctx *aflow.Context, state prepareResult, args indirectCallersArgs) (
-	indirectCallersResult, error) {
-	signature := args.Name
-	if !strings.Contains(args.Name, "(") {
-		info, err := state.Index.DefinitionSource(args.ContextFile, args.Name)
+// getIndirectCallSites is a shared helper for retrieving indirect call sites.
+// If the provided name is a function name rather than a signature, it will
+// first query the definition source to resolve it into its function signature
+// before querying the index for indirect callers.
+func getIndirectCallSites(
+	index index, contextFile, name, srcPrefix string, contextLines, outputLimit int,
+) ([]codesearch.ReferenceInfo, int, error) {
+	signature := name
+	if !strings.Contains(name, "(") {
+		info, err := index.DefinitionSource(contextFile, name)
 		if err == nil && info != nil && info.Signature != "" {
 			signature = info.Signature
 		}
 	}
+	return index.FindIndirectCallSites(signature, srcPrefix, contextLines, outputLimit)
+}
 
+func indirectCallers(ctx *aflow.Context, state prepareResult, args indirectCallersArgs) (
+	indirectCallersResult, error) {
 	outputLimit := 20
 	if args.IncludeSnippetLines == 0 {
 		outputLimit = 1000
 	} else if args.IncludeSnippetLines < 10 {
 		outputLimit = 100
 	}
-	refs, totalCount, err := state.Index.FindIndirectCallSites(
-		signature, args.SourceTreePrefix, int(args.IncludeSnippetLines), outputLimit)
+	refs, totalCount, err := getIndirectCallSites(state.Index, args.ContextFile, args.Name,
+		args.SourceTreePrefix, int(args.IncludeSnippetLines), outputLimit)
 	if err != nil {
 		return indirectCallersResult{}, err
 	}
