@@ -26,12 +26,15 @@ func TestLLMTool(t *testing.T) {
 		&LLMAgent{
 			Reply: "Reply",
 			Tools: []Tool{
-				&LLMTool{
+				&LLMTool[DefaultLLMArgs]{
 					Name:        "researcher",
 					Model:       "sub-agent-model",
 					TaskType:    FormalReasoningTask,
 					Description: "researcher description",
 					Instruction: "researcher instruction",
+					PromptBuilder: func(ctx *Context, args DefaultLLMArgs) (string, error) {
+						return args.Question, nil
+					},
 					Tools: []Tool{
 						NewFuncTool("researcher-tool", func(ctx *Context, state inputs, args toolArgs) (struct{}, error) {
 							// State passed all the way from the workflow inputs.
@@ -146,12 +149,15 @@ func TestLLMToolMaxIters(t *testing.T) {
 		&LLMAgent{
 			Reply: "Reply",
 			Tools: []Tool{
-				&LLMTool{
+				&LLMTool[DefaultLLMArgs]{
 					Name:        "researcher",
 					Model:       "sub-agent-model",
 					TaskType:    FormalReasoningTask,
 					Description: "researcher description",
 					Instruction: "researcher instruction",
+					PromptBuilder: func(ctx *Context, args DefaultLLMArgs) (string, error) {
+						return args.Question, nil
+					},
 					Tools: []Tool{
 						NewFuncTool("researcher-tool", func(ctx *Context, state struct{}, args toolArgs) (struct{}, error) {
 							return struct{}{}, nil

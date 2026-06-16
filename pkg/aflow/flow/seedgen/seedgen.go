@@ -67,7 +67,10 @@ func init() {
 						// gitlog.Tools,
 						syzlang.ReadDescription,
 						syzlang.ExecuteSeed,
-						syzlang.Coverage,
+						syzlang.VerifyPCReached,
+						syzlang.FileCoverage,
+						// syzlang.CoverageFiles,
+						syzlang.ExecutionSummarizer,
 						syzlang.DisassembleContext,
 					),
 					TaskType:    aflow.FormalReasoningTask,
@@ -129,7 +132,7 @@ You are an expert in the Linux kernel fuzzing. Your primary goal is to write a s
 to reach a specific PC execution point in the kernel.
 
 You are initially provided with:
-- Target file and line number.
+- Target file and line number and the target PC address.
 - The target function name.
 - The C source code of the outermost function containing the target PC.
 
@@ -158,6 +161,13 @@ Document about syzkaller program syntax:
 
 Document about syzlang system call descriptions syntax:
 ===
+CRITICAL NOTE ON OUTPUT FORMAT:
+You are provided below with the 'syzlang system call descriptions syntax'. You must use
+this documentation strictly as a reference to help you read and understand the available
+syscall description files (via the 'read-description' tool). **However, your final
+output MUST be a syzkaller program (a seed) conforming to the 'syzkaller program syntax'
+document provided above, NOT a syzlang description.**
+
 {{.DocSyscallDescriptionsSyntax}}
 ===
 
@@ -213,8 +223,9 @@ Use 'disassemble-context' specifically when you need to see the exact assembly a
 if symbolization is inaccurate.
 File paths are relative to the kernel source tree (e.g., 'net/ipv4/tcp.c'). Note that 'grepper'
 can ONLY grep Linux source and NOT the syzlang descriptions.
-7. If you need to read, inspect or get syzlang description files, one must always use the 'read-description'
-tool. Do NOT use 'grepper', 'codeexpert' tool or other code search tools to read syzlang description files.
+7. You can see a list of 'Available Syscall Description Files' at the bottom of the
+prompt. If you need to read their contents, use the 'read-description' tool. Do NOT
+use 'grepper' or other code search tools to read syzlang description files.
 8. Decide: If the target line is unreachable from userspace, or if you want to give up for other reasons, 
 set GeneratorGiveUp to true and provide a GeneratorReason
 by reasoning why the wanted code position is unreachable, for instace, because we don't have proper
@@ -224,6 +235,9 @@ another function, which you can verify using 'codesearch-find-references', and y
 that calling function). If you strongly believe the line is executed but the coverage tool does not reflect it
 (e.g., due to compiler optimizations or debug info issues), you MUST set GeneratorGiveUp to true and explain
 this discrepancy in GeneratorReason.
+CRITICAL: If you have made multiple attempts (e.g. > 3) and are making no progress, or if you realize
+a missing syzlang description prevents you from constructing the required arguments, you MUST give up
+instead of infinitely trying and reasoning.
 9. Otherwise, repeat by going to step 1.
 10. Output the final syzkaller program in the 'CandidateSeedSyz' field. If you gave up, also set
 'GeneratorGiveUp' to true and provide a 'GeneratorReason' in the 'GeneratorReason' field.

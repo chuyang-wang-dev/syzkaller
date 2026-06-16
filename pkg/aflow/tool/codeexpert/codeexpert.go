@@ -11,7 +11,7 @@ import (
 	"github.com/google/syzkaller/pkg/aflow/tool/grepper"
 )
 
-func New(enableGit bool) *aflow.LLMTool {
+func New(enableGit bool) *aflow.LLMTool[aflow.DefaultLLMArgs] {
 	var tools []aflow.Tool
 	inst := instructionHeader
 	if enableGit {
@@ -25,13 +25,16 @@ func New(enableGit bool) *aflow.LLMTool {
 		inst += instructionGitRestrictions
 	}
 
-	return &aflow.LLMTool{
+	return &aflow.LLMTool[aflow.DefaultLLMArgs]{
 		Name:        "codeexpert",
 		Model:       aflow.GoodBalancedModel,
 		TaskType:    aflow.FormalReasoningTask,
 		Description: description,
 		Instruction: inst,
 		Tools:       tools,
+		PromptBuilder: func(ctx *aflow.Context, args aflow.DefaultLLMArgs) (string, error) {
+			return args.Question, nil
+		},
 	}
 }
 

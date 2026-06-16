@@ -14,7 +14,7 @@ import (
 // It can have own tools, different from the parent LLM agent.
 // It can do complex multi-step research, and provide a concise answer to the parent LLM
 // without polluting its context window.
-type LLMTool struct {
+type LLMTool[Args any] struct {
 	// Most fields match that of LLMAgent.
 	// The prompt is not specified here, and is provided by the parent LLM.
 	Name     string
@@ -25,10 +25,14 @@ type LLMTool struct {
 	Instruction string
 	Tools       []Tool
 
+	// PromptBuilder converts the structured JSON arguments provided by the parent LLM
+	// into the final text prompt that initializes the subagent's conversation.
+	PromptBuilder func(ctx *Context, args Args) (string, error)
+
 	agent *LLMAgent
 }
 
-type llmToolArgs struct {
+type DefaultLLMArgs struct {
 	Question string `jsonschema:"Question you have."`
 }
 
@@ -36,23 +40,27 @@ type llmToolResults struct {
 	Answer string `jsonschema:"Answer to your question."`
 }
 
-func (t *LLMTool) declaration() *backend.FunctionDeclaration {
+func (t *LLMTool[Args]) declaration() *backend.FunctionDeclaration {
 	return &backend.FunctionDeclaration{
 		Name:                 t.Name,
 		Description:          t.Description,
-		ParametersJSONSchema: mustSchemaFor[llmToolArgs](),
+		ParametersJSONSchema: mustSchemaFor[Args](),
 		ResponseJSONSchema:   mustSchemaFor[llmToolResults](),
 	}
 }
 
-func (t *LLMTool) execute(ctx *Context, args map[string]any) (map[string]any, error) {
-	a, err := convertFromMap[llmToolArgs](args, false, true)
+func (t *LLMTool[Args]) execute(ctx *Context, args map[string]any) (map[string]any, error) {
+	a, err := convertFromMap[Args](args, false, true)
 	if err != nil {
 		return nil, err
 	}
 	// We temporarily use ctx.state to provide the prompt to the agent,
 	// and extract the reply.
-	ctx.state[llmToolPrompt] = a.Question
+	prompt, err := t.PromptBuilder(ctx, a)
+	if err != nil {
+		return nil, err
+	}
+	ctx.state[llmToolPrompt] = prompt
 	defer delete(ctx.state, llmToolPrompt)
 	if err := t.agent.execute(ctx); err != nil {
 		return nil, err
@@ -70,7 +78,7 @@ const (
 	llmToolReply  = "AFLOW_LLMTOOL_REPLY"
 )
 
-func (t *LLMTool) verify(ctx *verifyContext) {
+func (t *LLMTool[Args]) verify(ctx *verifyContext) {
 	t.agent = &LLMAgent{
 		Name:        t.Name,
 		Model:       t.Model,

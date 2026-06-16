@@ -54,9 +54,14 @@ func VerifyPCReachedFunc(ctx *aflow.Context, args VerifyPCReachedArgs) (VerifyPC
 		return VerifyPCReachedResult{PCReached: false}, nil
 	}
 
-	coverage, err := LoadCoverage(ctx, cachedID)
+	reached, err := CheckPCInCoverage(ctx, cachedID, args.PC)
+	return VerifyPCReachedResult{PCReached: reached}, err
+}
+
+func CheckPCInCoverage(ctx *aflow.Context, executionCachedID string, targetPC uint64) (bool, error) {
+	coverage, err := LoadCoverage(ctx, executionCachedID)
 	if err != nil {
-		return VerifyPCReachedResult{}, err
+		return false, err
 	}
 
 	// TODO: For the future, we should reject non-KCOV call PC lines. KCOV typically
@@ -64,11 +69,11 @@ func VerifyPCReachedFunc(ctx *aflow.Context, args VerifyPCReachedArgs) (VerifyPC
 	// will fail if the provided PC is in the middle of a basic block.
 	for _, callcov := range coverage {
 		for _, frame := range callcov {
-			if frame.PC == args.PC {
-				return VerifyPCReachedResult{PCReached: true}, nil
+			if frame.PC == targetPC {
+				return true, nil
 			}
 		}
 	}
 
-	return VerifyPCReachedResult{PCReached: false}, nil
+	return false, nil
 }

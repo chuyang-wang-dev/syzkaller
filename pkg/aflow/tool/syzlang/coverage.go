@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/google/syzkaller/pkg/aflow"
@@ -39,7 +40,12 @@ to get the trace for one specific syscall. Use -1 to get the trace for extra (ba
 If the trace is too large, it will be truncated. You can use 'Offset' and 'Limit' to paginate through the omitted parts.
 `)
 
-	Coverage = []aflow.Tool{CoverageFiles, FileCoverage, ExecutionTrace}
+	VerifyPCReached = aflow.NewFuncTool("check-pc-coverage", verifyPCReached, `
+Tool evaluates whether an exact PC address was executed.
+You MUST provide the ExecutionCachedID and the exact target PC address as a hex string (e.g., '0xffffffff81b43437').
+`)
+
+	Coverage = []aflow.Tool{CoverageFiles, FileCoverage, ExecutionTrace, VerifyPCReached}
 )
 
 type CoverageFilesArgs struct {
@@ -411,4 +417,34 @@ func paginateTrace(out []string, offset, limit, maxLines int) []string {
 		newOut = append(newOut, msg)
 	}
 	return newOut
+}
+
+type VerifyPCReachedArgs struct {
+	ExecutionCachedID string `jsonschema:"Cached ID returned by the execute-seed tool."`
+	PC                string `jsonschema:"The exact target PC address to verify (e.g., '0x123')."`
+}
+
+type VerifyPCReachedResult struct {
+	PCReached bool `jsonschema:"True if the target PC was reached, false otherwise."`
+}
+
+func verifyPCReached(
+	ctx *aflow.Context, state reproduceState, args VerifyPCReachedArgs) (VerifyPCReachedResult, error) {
+	if args.ExecutionCachedID == "" {
+		return VerifyPCReachedResult{}, aflow.BadCallError("missing execution cached ID")
+	}
+
+	raw := strings.TrimSpace(args.PC)
+	raw = strings.TrimPrefix(raw, "0x")
+	pc, err := strconv.ParseUint(raw, 16, 64)
+	if err != nil {
+		return VerifyPCReachedResult{}, aflow.BadCallError("invalid PC format: %v", err)
+	}
+
+	reached, err := crash.CheckPCInCoverage(ctx, args.ExecutionCachedID, pc)
+	if err != nil {
+		return VerifyPCReachedResult{}, err
+	}
+
+	return VerifyPCReachedResult{PCReached: reached}, nil
 }
