@@ -17,6 +17,7 @@ import (
 	"github.com/google/syzkaller/pkg/aflow/tool/codesearcher"
 	"github.com/google/syzkaller/pkg/aflow/tool/syzlang"
 	"github.com/google/syzkaller/prog"
+	"github.com/google/syzkaller/sys/targets"
 )
 
 type ReproInputs struct {
@@ -42,7 +43,7 @@ func init() {
 		&aflow.Flow{
 			Consts: map[string]any{
 				"SyzkallerCommit":              prog.GitRevisionBase,
-				"DescriptionFiles":             syzlang.DescriptionFiles(),
+				"DescriptionFilesPrompt":       syzlang.DescriptionFilesPrompt(targets.Linux),
 				"DocProgramSyntax":             docs.ProgramSyntax,
 				"DocSyscallDescriptionsSyntax": docs.SyscallDescriptionsSyntax,
 				"ReproC":                       "", // is needed by crash.Reproduce
@@ -61,7 +62,8 @@ func init() {
 					}](),
 					Tools: aflow.Tools(
 						common.CodeAccessTools,
-						syzlang.ReadDescription,
+						syzlang.ReadSyzSpec,
+						syzlang.SyzGrepper,
 						syzlang.Reproduce,
 						syzlang.Coverage,
 					),
@@ -106,7 +108,5 @@ Bug title: {{.BugTitle}}
 The bug report to reproduce:
 {{.CrashReport}}
 
-The list of existing description files:
-{{range $file := .DescriptionFiles}}{{$file}}
-{{end}}
+{{.DescriptionFilesPrompt}}
 `
