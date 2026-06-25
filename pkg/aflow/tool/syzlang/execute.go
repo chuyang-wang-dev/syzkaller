@@ -20,7 +20,8 @@ It returns an ExecutionCachedID even if the execution times out or doesn't crash
 `)
 
 type ExecuteSeedArgs struct {
-	ReproSyz string `jsonschema:"Syz program to execute."`
+	BaseTestSeed string `jsonschema:"Optional path to a test seed file." json:",omitempty"`
+	ReproSyz     string `jsonschema:"Syz program to execute. Appended to BaseTestSeed if provided." json:",omitempty"`
 }
 
 type CallError struct {
@@ -36,7 +37,16 @@ type ExecuteSeedResult struct {
 }
 
 func executeSeed(ctx *aflow.Context, state reproduceState, args ExecuteSeedArgs) (ExecuteSeedResult, error) {
-	if args.ReproSyz == "" {
+	fullSyz := args.ReproSyz
+	if args.BaseTestSeed != "" {
+		data, err := GetTestSeed(args.BaseTestSeed)
+		if err != nil {
+			return ExecuteSeedResult{}, aflow.BadCallError("failed to read BaseTestSeed: %v", err)
+		}
+		fullSyz = string(data) + "\n" + args.ReproSyz
+	}
+
+	if fullSyz == "" {
 		return ExecuteSeedResult{}, aflow.BadCallError("syz program cannot be empty")
 	}
 
@@ -44,7 +54,7 @@ func executeSeed(ctx *aflow.Context, state reproduceState, args ExecuteSeedArgs)
 	if err != nil {
 		return ExecuteSeedResult{}, err
 	}
-	p, err := pt.Deserialize([]byte(args.ReproSyz), prog.Strict)
+	p, err := pt.Deserialize([]byte(fullSyz), prog.Strict)
 	if err != nil {
 		return ExecuteSeedResult{}, aflow.BadCallError("%v", err)
 	}
@@ -63,7 +73,7 @@ func executeSeed(ctx *aflow.Context, state reproduceState, args ExecuteSeedArgs)
 		Image:        state.Image,
 		Type:         state.Type,
 		VM:           state.VM,
-		ReproSyz:     args.ReproSyz,
+		ReproSyz:     fullSyz,
 		KernelSrc:    state.KernelSrc,
 		KernelObj:    state.KernelObj,
 		KernelCommit: state.KernelCommit,

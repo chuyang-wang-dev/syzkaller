@@ -5,14 +5,17 @@ package crash
 
 import (
 	"encoding/json"
+	"path"
 
 	"github.com/google/syzkaller/pkg/aflow"
+	"github.com/google/syzkaller/sys"
 )
 
 var VerifyPCReached = aflow.NewFuncAction("verify-pc-reached", VerifyPCReachedFunc)
 
 type VerifyPCReachedArgs struct {
 	PC               uint64
+	BaseTestSeed     string
 	CandidateSeedSyz string
 	TargetOS         string
 	TargetArch       string
@@ -31,7 +34,16 @@ type VerifyPCReachedResult struct {
 }
 
 func VerifyPCReachedFunc(ctx *aflow.Context, args VerifyPCReachedArgs) (VerifyPCReachedResult, error) {
-	if args.CandidateSeedSyz == "" {
+	fullSyz := args.CandidateSeedSyz
+	if args.BaseTestSeed != "" {
+		data, err := sys.Files.ReadFile(path.Join("linux", args.BaseTestSeed))
+		if err != nil {
+			return VerifyPCReachedResult{PCReached: false}, aflow.BadCallError("failed to read BaseTestSeed: %v", err)
+		}
+		fullSyz = string(data) + "\n" + fullSyz
+	}
+
+	if fullSyz == "" {
 		return VerifyPCReachedResult{PCReached: false}, nil
 	}
 
@@ -41,7 +53,7 @@ func VerifyPCReachedFunc(ctx *aflow.Context, args VerifyPCReachedArgs) (VerifyPC
 		Image:        args.Image,
 		Type:         args.Type,
 		VM:           args.VM,
-		ReproSyz:     args.CandidateSeedSyz,
+		ReproSyz:     fullSyz,
 		KernelSrc:    args.KernelSrc,
 		KernelObj:    args.KernelObj,
 		KernelCommit: args.KernelCommit,

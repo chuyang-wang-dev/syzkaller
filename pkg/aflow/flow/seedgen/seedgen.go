@@ -57,7 +57,8 @@ func init() {
 					Name:  "seed-generator",
 					Model: aflow.GoodBalancedModel,
 					Outputs: aflow.LLMOutputs[struct {
-						CandidateSeedSyz string `jsonschema:"Valid syzkaller program without triple backticks. Leave empty if giving up."`
+						BaseTestSeed     string `jsonschema:"Optional test seed file to use as base." json:",omitempty"`
+						CandidateSeedSyz string `jsonschema:"Valid syz program. Appended to BaseTestSeed." json:",omitempty"`
 						GeneratorGiveUp  bool   `jsonschema:"Set true if target is unreachable from userspace or you give up."`
 						GeneratorReason  string `jsonschema:"If GeneratorGiveUp is true, provide your reasoning here."`
 					}](),
@@ -85,6 +86,7 @@ func init() {
 }
 
 type FormatOutputArgs struct {
+	BaseTestSeed     string
 	CandidateSeedSyz string
 	GeneratorGiveUp  bool
 	GeneratorReason  string
@@ -93,8 +95,16 @@ type FormatOutputArgs struct {
 
 var ActionFormatOutput = aflow.NewFuncAction("format-output",
 	func(ctx *aflow.Context, args FormatOutputArgs) (ai.SeedGenOutputs, error) {
+		seedSyz := args.CandidateSeedSyz
+		if args.BaseTestSeed != "" {
+			data, err := syzlang.GetTestSeed(args.BaseTestSeed)
+			if err != nil {
+				return ai.SeedGenOutputs{}, aflow.BadCallError("failed to read BaseTestSeed: %v", err)
+			}
+			seedSyz = string(data) + "\n" + seedSyz
+		}
 		return ai.SeedGenOutputs{
-			SeedSyz: args.CandidateSeedSyz,
+			SeedSyz: seedSyz,
 			Success: args.PCReached,
 			GiveUp:  args.GeneratorGiveUp,
 			Reason:  args.GeneratorReason,
@@ -226,6 +236,15 @@ can ONLY grep Linux source and NOT the syzlang descriptions.
 7. You can see a list of 'Available Syscall Description Files' at the bottom of the
 prompt. If you need to read their contents, use the 'read-description' tool. Do NOT
 use 'grepper' or other code search tools to read syzlang description files.
+If you need to use complex pseudo-syscalls with highly structured binary data 
+(such as compressed filesystem images like syz_mount_image):
+- Use 'read-description' to grep the 'test/' directory for examples. The output
+  will be prefixed with the filename (e.g., 'test/syz_mount_image_btrfs_0:6: ...').
+- The payload itself will be truncated (e.g. '... <truncated>'). DO NOT try to
+  copy the truncated string!
+- Instead, extract the filename and pass it to the 'BaseTestSeed' argument in
+  'execute-seed' (and in your final output). Provide only the additional
+  syscalls you want to append in the 'ReproSyz' / 'CandidateSeedSyz' fields.
 8. Decide: If the target line is unreachable from userspace, or if you want to give up for other reasons, 
 set GeneratorGiveUp to true and provide a GeneratorReason
 by reasoning why the wanted code position is unreachable, for instace, because we don't have proper
