@@ -24,12 +24,17 @@ func TestProviderResolveModels(t *testing.T) {
 		{
 			name:     "resolves good balanced model pool",
 			category: backend.GoodBalancedModel,
-			want:     []string{"gemini-3-flash-preview", "gemini-3.5-flash"},
+			want:     []string{"gemini-3.5-flash", "gemini-3-flash-preview"},
 		},
 		{
 			name:     "resolves best expensive model pool",
 			category: backend.BestExpensiveModel,
 			want:     []string{"gemini-3.1-pro-preview"},
+		},
+		{
+			name:     "resolves temporary 3.5 flash only pool",
+			category: backend.Temporary35FlashOnlyModel,
+			want:     []string{"gemini-3.5-flash"},
 		},
 		{
 			name:     "returns nil for unrecognized category",

@@ -79,6 +79,7 @@ func ExecuteSeedFunc(ctx *aflow.Context, args ReproduceArgs) (string, error) {
 
 	cached, cachedID, err := aflow.CacheObject(ctx, "seed-exec", desc, func() (cachedExecution, error) {
 		var res cachedExecution
+		res.ReproSyz = args.ReproSyz
 		workdir, err := ctx.TempDir()
 		if err != nil {
 			return res, err

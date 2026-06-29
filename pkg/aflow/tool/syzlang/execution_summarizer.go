@@ -85,14 +85,14 @@ Question from Parent Agent:
 
 const summarizerInstruction = `
 You are an expert in analyzing kernel executions. Your task is to compress and summarize the execution of a syzkaller
-program, identifying the deepest point of execution before divergence.
+program, identifying the deepest point of execution before divergence and explaining why it diverged.
 You must base all your claims on the provided execution trace and coverage information.
 If you don't have enough information, you MUST state that instead of guessing.
 
 The main agent has provided you with:
 1. The ExecutionCachedID.
-2. The full syzkaller program that was executed.
-3. The target constraint (e.g., target file, and PC address).
+2. The target constraint (e.g., target file, and PC address).
+3. The full syzkaller program that was executed.
 4. The formatted execution traces for all syscalls.
 5. The source code coverage snippets for the target file.
 
@@ -105,10 +105,9 @@ Instructions:
    of covered files, if there are multiple interesting files, you MUST use the 'get-file-coverage' tool
    simultaneously for ALL of those files in the same response. Do not fetch coverage one by one.
 4. Find the deepest point or the exact divergence point in the trace.
-5. Provide a concise, highly relevant summary back to the main agent. Include:
-   - A brief summary of the trace leading up to the divergence.
+5. Provide a concise, highly relevant summary back to the main agent.
 
-CRITICAL: Do NOT attempt to reason about *why* the execution diverged (e.g., failed checks, missing flags).
-Your job is strictly to summarize *what* happened and report the deepest execution point.
-The parent agent will handle the root-cause analysis.
+CRITICAL: You MUST reason about *why* the execution diverged and provide a high-level, semantic 
+summary of the failure (e.g., 'syscall X returned EINVAL because flag Y was missing') so the manager 
+can adjust its strategy. Do not focus excessively on low-level syntax.
 `

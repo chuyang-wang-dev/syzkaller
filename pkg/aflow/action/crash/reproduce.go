@@ -235,6 +235,7 @@ type cachedExecution struct {
 	Error          string
 	Coverage       [][]symbolizer.Frame
 	CallErrors     []int32
+	ReproSyz       string
 }
 
 func LoadCoverage(ctx *aflow.Context, cachedID string) ([][]symbolizer.Frame, error) {
@@ -243,6 +244,14 @@ func LoadCoverage(ctx *aflow.Context, cachedID string) ([][]symbolizer.Frame, er
 		return nil, err
 	}
 	return cached.Coverage, nil
+}
+
+func LoadProgram(ctx *aflow.Context, cachedID string) (string, error) {
+	cached, err := aflow.RetrieveObject[cachedExecution](ctx, cachedID)
+	if err != nil {
+		return "", err
+	}
+	return cached.ReproSyz, nil
 }
 
 func LoadCallErrors(ctx *aflow.Context, cachedID string) ([]int32, error) {
