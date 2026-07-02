@@ -39,6 +39,8 @@ type AppConfig struct {
 type AIConfig struct {
 	// The name of the GCP Secret Manager secret containing the Gemini API key.
 	GeminiAPIKey string `yaml:"geminiAPIKey"`
+	// Maximum tokens allowed per workflow run (0 = no limit).
+	TokenLimit int `yaml:"tokenLimit"`
 }
 
 func (c *AIConfig) Empty() bool {
