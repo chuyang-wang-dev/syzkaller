@@ -33,22 +33,27 @@ var ErrDidNotCrash = errors.New("reproducer did not crash")
 // If the reproducer does not trigger a crash, action fails.
 var Reproduce = aflow.NewFuncAction("crash-reproducer", ReproduceFunc)
 
-type ReproduceArgs struct {
+type TargetConfig struct {
 	AgentName    string
 	TargetArch   string
 	Syzkaller    string
 	Image        string
 	Type         string
 	VM           json.RawMessage
-	ReproOpts    string
-	ReproSyz     string
-	ReproC       string
 	KernelSrc    string
 	KernelObj    string
 	KernelCommit string
 	KernelConfig string
 	StraceBin    string
 	NeedStrace   bool
+	Procs        int
+}
+
+type ReproduceArgs struct {
+	TargetConfig
+	ReproOpts string
+	ReproSyz  string
+	ReproC    string
 }
 
 type reproduceResult struct {
@@ -58,7 +63,7 @@ type reproduceResult struct {
 	ReproducedFaultInjection string
 }
 
-func (args *ReproduceArgs) Validate() error {
+func (args *TargetConfig) Validate() error {
 	if targets.Get(targets.Linux, args.TargetArch) == nil {
 		return fmt.Errorf("unsupported target: %v/%v", targets.Linux, args.TargetArch)
 	}
@@ -95,7 +100,7 @@ func RunTest(args ReproduceArgs, workdir string, collectCoverage bool) (RunTestR
 		return res, errors.New("run test: coverage collection requires a syzkaller program")
 	}
 
-	cfg, err := buildConfig(args, workdir)
+	cfg, err := buildConfig(args.TargetConfig, workdir)
 	if err != nil {
 		return res, err
 	}
@@ -204,7 +209,7 @@ func aggregateTestResults(validResults []instance.EnvTestResult,
 	}
 
 	if res.Report == nil && res.BootError == "" && firstCoverage != nil {
-		coverage, err := symbolize(args, firstCoverage)
+		coverage, err := symbolize(args.TargetConfig, firstCoverage)
 		if err != nil {
 			return res, fmt.Errorf("failed to symbolize coverage: %w", err)
 		}
@@ -235,7 +240,8 @@ type cachedExecution struct {
 	Error          string
 	Coverage       [][]symbolizer.Frame
 	CallErrors     []int32
-	ReproSyz       string
+	BaseTestSeed   string
+	GeneratedSyz   string
 }
 
 func LoadCoverage(ctx *aflow.Context, cachedID string) ([][]symbolizer.Frame, error) {
@@ -246,12 +252,13 @@ func LoadCoverage(ctx *aflow.Context, cachedID string) ([][]symbolizer.Frame, er
 	return cached.Coverage, nil
 }
 
-func LoadProgram(ctx *aflow.Context, cachedID string) (string, error) {
+func LoadProgramDetails(ctx *aflow.Context, cachedID string) (
+	baseTestSeed, generatedSyz string, err error) {
 	cached, err := aflow.RetrieveObject[cachedExecution](ctx, cachedID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return cached.ReproSyz, nil
+	return cached.BaseTestSeed, cached.GeneratedSyz, nil
 }
 
 func LoadCallErrors(ctx *aflow.Context, cachedID string) ([]int32, error) {
@@ -262,7 +269,7 @@ func LoadCallErrors(ctx *aflow.Context, cachedID string) ([]int32, error) {
 	return cached.CallErrors, nil
 }
 
-func buildConfig(args ReproduceArgs, workdir string) (*mgrconfig.Config, error) {
+func buildConfig(args TargetConfig, workdir string) (*mgrconfig.Config, error) {
 	var vmConfig map[string]any
 	if err := json.Unmarshal(args.VM, &vmConfig); err != nil {
 		return nil, fmt.Errorf("failed to parse VM config: %w", err)
@@ -303,6 +310,11 @@ func buildConfig(args ReproduceArgs, workdir string) (*mgrconfig.Config, error) 
 	cfg.Image = image
 	cfg.Type = args.Type
 	cfg.VM = vmCfg
+	if args.Procs > 0 {
+		cfg.Procs = args.Procs
+	} else {
+		cfg.Procs = 1
+	}
 	cfg.Experimental.DescriptionsMode = mgrconfig.AnyDescriptionsMode
 	if args.NeedStrace && args.StraceBin != "" {
 		cfg.StraceBin = args.StraceBin
@@ -376,7 +388,7 @@ func ReproduceFunc(ctx *aflow.Context, args ReproduceArgs) (reproduceResult, err
 
 var makeSymbolizer = symbolizer.Make
 
-func symbolize(args ReproduceArgs, coverage [][]uint64) ([][]symbolizer.Frame, error) {
+func symbolize(args TargetConfig, coverage [][]uint64) ([][]symbolizer.Frame, error) {
 	if len(coverage) == 0 {
 		return nil, nil
 	}

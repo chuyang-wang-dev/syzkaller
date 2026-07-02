@@ -5,10 +5,8 @@ package crash
 
 import (
 	"encoding/json"
-	"path"
 
 	"github.com/google/syzkaller/pkg/aflow"
-	"github.com/google/syzkaller/sys"
 )
 
 var VerifyPCReached = aflow.NewFuncAction("verify-pc-reached", VerifyPCReachedFunc)
@@ -34,33 +32,31 @@ type VerifyPCReachedResult struct {
 }
 
 func VerifyPCReachedFunc(ctx *aflow.Context, args VerifyPCReachedArgs) (VerifyPCReachedResult, error) {
-	fullSyz := args.CandidateSeedSyz
-	if args.BaseTestSeed != "" {
-		data, err := sys.Files.ReadFile(path.Join("linux", args.BaseTestSeed))
-		if err != nil {
-			return VerifyPCReachedResult{PCReached: false}, aflow.BadCallError("failed to read BaseTestSeed: %v", err)
-		}
-		fullSyz = string(data) + "\n" + fullSyz
+	fullSyz, _, err := CombineSyzPrograms(args.BaseTestSeed, args.CandidateSeedSyz)
+	if err != nil {
+		return VerifyPCReachedResult{PCReached: false}, aflow.BadCallError("%v", err)
 	}
 
 	if fullSyz == "" {
 		return VerifyPCReachedResult{PCReached: false}, nil
 	}
 
-	reproArgs := ReproduceArgs{
-		TargetArch:   args.TargetArch,
-		Syzkaller:    args.Syzkaller,
-		Image:        args.Image,
-		Type:         args.Type,
-		VM:           args.VM,
-		ReproSyz:     fullSyz,
-		KernelSrc:    args.KernelSrc,
-		KernelObj:    args.KernelObj,
-		KernelCommit: args.KernelCommit,
-		KernelConfig: args.KernelConfig,
+	executeArgs := ExecuteSeedArgs{
+		TargetConfig: TargetConfig{
+			TargetArch:   args.TargetArch,
+			Syzkaller:    args.Syzkaller,
+			Image:        args.Image,
+			Type:         args.Type,
+			VM:           args.VM,
+			KernelSrc:    args.KernelSrc,
+			KernelObj:    args.KernelObj,
+			KernelCommit: args.KernelCommit,
+			KernelConfig: args.KernelConfig,
+		},
+		SeedSyz: fullSyz,
 	}
 
-	cachedID, err := ExecuteSeedFunc(ctx, reproArgs)
+	cachedID, err := ExecuteSeedFunc(ctx, executeArgs, args.BaseTestSeed, args.CandidateSeedSyz)
 	if err != nil {
 		// If the seed is malformed or execution fails, it means the PC was not reached.
 		return VerifyPCReachedResult{PCReached: false}, nil

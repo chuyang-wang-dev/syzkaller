@@ -4,6 +4,9 @@
 package syzlang
 
 import (
+	"fmt"
+	"regexp"
+	"strconv"
 	"syscall"
 
 	"github.com/google/syzkaller/pkg/aflow"
@@ -37,13 +40,9 @@ type ExecuteSeedResult struct {
 }
 
 func executeSeed(ctx *aflow.Context, state reproduceState, args ExecuteSeedArgs) (ExecuteSeedResult, error) {
-	fullSyz := args.ReproSyz
-	if args.BaseTestSeed != "" {
-		data, err := GetTestSeed(args.BaseTestSeed)
-		if err != nil {
-			return ExecuteSeedResult{}, aflow.BadCallError("failed to read BaseTestSeed: %v", err)
-		}
-		fullSyz = string(data) + "\n" + args.ReproSyz
+	fullSyz, baseLines, err := crash.CombineSyzPrograms(args.BaseTestSeed, args.ReproSyz)
+	if err != nil {
+		return ExecuteSeedResult{}, aflow.BadCallError("%v", err)
 	}
 
 	if fullSyz == "" {
@@ -56,7 +55,20 @@ func executeSeed(ctx *aflow.Context, state reproduceState, args ExecuteSeedArgs)
 	}
 	p, err := pt.Deserialize([]byte(fullSyz), prog.Strict)
 	if err != nil {
-		return ExecuteSeedResult{}, aflow.BadCallError("%v", err)
+		errStr := err.Error()
+		if baseLines > 0 {
+			re := regexp.MustCompile(`(?m)line #(\d+):`)
+			errStr = re.ReplaceAllStringFunc(errStr, func(match string) string {
+				parts := re.FindStringSubmatch(match)
+				if len(parts) > 1 {
+					if lineNum, err := strconv.Atoi(parts[1]); err == nil && lineNum > baseLines {
+						return fmt.Sprintf("line #%d:", lineNum-baseLines)
+					}
+				}
+				return match
+			})
+		}
+		return ExecuteSeedResult{}, aflow.BadCallError("%v", errStr)
 	}
 	if len(p.Calls) > 64 {
 		return ExecuteSeedResult{}, aflow.BadCallError("program has %d calls, exceeding the limit of 64", len(p.Calls))
@@ -67,20 +79,22 @@ func executeSeed(ctx *aflow.Context, state reproduceState, args ExecuteSeedArgs)
 		return ExecuteSeedResult{}, nil
 	}
 
-	reproArgs := crash.ReproduceArgs{
-		TargetArch:   state.TargetArch,
-		Syzkaller:    state.Syzkaller,
-		Image:        state.Image,
-		Type:         state.Type,
-		VM:           state.VM,
-		ReproSyz:     fullSyz,
-		KernelSrc:    state.KernelSrc,
-		KernelObj:    state.KernelObj,
-		KernelCommit: state.KernelCommit,
-		KernelConfig: state.KernelConfig,
+	executeArgs := crash.ExecuteSeedArgs{
+		TargetConfig: crash.TargetConfig{
+			TargetArch:   state.TargetArch,
+			Syzkaller:    state.Syzkaller,
+			Image:        state.Image,
+			Type:         state.Type,
+			VM:           state.VM,
+			KernelSrc:    state.KernelSrc,
+			KernelObj:    state.KernelObj,
+			KernelCommit: state.KernelCommit,
+			KernelConfig: state.KernelConfig,
+		},
+		SeedSyz: fullSyz,
 	}
 
-	executionCachedID, err := crash.ExecuteSeedFunc(ctx, reproArgs)
+	executionCachedID, err := crash.ExecuteSeedFunc(ctx, executeArgs, args.BaseTestSeed, args.ReproSyz)
 	if err != nil {
 		return ExecuteSeedResult{}, err
 	}
@@ -89,16 +103,27 @@ func executeSeed(ctx *aflow.Context, state reproduceState, args ExecuteSeedArgs)
 	if err != nil {
 		return ExecuteSeedResult{}, err
 	}
+	baseCallsCount, err := crash.BaseSeedCallCount(args.BaseTestSeed, state.TargetArch)
+	if err != nil {
+		return ExecuteSeedResult{}, aflow.BadCallError("failed to get base test seed calls: %v", err)
+	}
 
 	var structuredErrors []CallError
 	for i, errCode := range callErrors {
 		if errCode != 0 {
+			if i < baseCallsCount {
+				return ExecuteSeedResult{}, aflow.BadCallError(
+					"base test seed failed at syscall index %d with errno %d (%s). "+
+						"This usually indicates an environment setup failure, the target is likely unreachable "+
+						"with this base seed.", i, errCode, syscall.Errno(errCode).Error())
+			}
+
 			callName := "unknown"
 			if i < len(p.Calls) {
 				callName = p.Calls[i].Meta.Name
 			}
 			structuredErrors = append(structuredErrors, CallError{
-				Index:    i,
+				Index:    i - baseCallsCount,
 				CallName: callName,
 				Errno:    errCode,
 				Error:    syscall.Errno(errCode).Error(),

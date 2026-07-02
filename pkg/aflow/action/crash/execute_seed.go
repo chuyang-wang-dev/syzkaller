@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/google/syzkaller/pkg/aflow"
-	"github.com/google/syzkaller/pkg/csource"
 	"github.com/google/syzkaller/pkg/flatrpc"
 	"github.com/google/syzkaller/pkg/fuzzer/queue"
 	"github.com/google/syzkaller/pkg/hash"
@@ -18,13 +19,19 @@ import (
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/pkg/symbolizer"
 	"github.com/google/syzkaller/prog"
+	"github.com/google/syzkaller/sys"
 	"github.com/google/syzkaller/sys/targets"
 )
+
+type ExecuteSeedArgs struct {
+	TargetConfig
+	SeedSyz string
+}
 
 // ExecuteSeedFunc boots the kernel and runs a single test program to collect coverage.
 // It differs from ReproduceFuncWithCoverage in that it forces threaded mode and
 // returns coverage data even if the execution fails with an error (e.g., timeout).
-func ExecuteSeedFunc(ctx *aflow.Context, args ReproduceArgs) (string, error) {
+func ExecuteSeedFunc(ctx *aflow.Context, args ExecuteSeedArgs, baseTestSeed, generatedSyz string) (string, error) {
 	imageData, err := os.ReadFile(args.Image)
 	if err != nil {
 		return "", err
@@ -34,58 +41,33 @@ func ExecuteSeedFunc(ctx *aflow.Context, args ReproduceArgs) (string, error) {
 		args.TargetArch = targets.AMD64
 	}
 
-	// We force threaded mode to allow blocking calls to not hang the whole execution.
-	// If ReproOpts is empty, we generate default opts and set Threaded = true.
-	// If it's not empty, we assume the caller (or LLM) knows what it's doing,
-	// or we could try to parse and modify it. For simplicity, we just force it if empty.
-	var execOpts flatrpc.ExecOpts
-	if args.ReproOpts == "" {
-		cfg := mgrconfig.DefaultValues()
-		cfg.RawTarget = targets.Linux + "/" + args.TargetArch
-		opts := csource.DefaultOpts(cfg)
-		opts.Threaded = true
-		opts.RepeatTimes = 1
-		args.ReproOpts = string(opts.Serialize())
-		execOpts.ExecFlags |= flatrpc.ExecFlagThreaded
-	} else {
-		opts, err := csource.DeserializeOptions([]byte(args.ReproOpts))
-		if err == nil {
-			opts.RepeatTimes = 1
-			args.ReproOpts = string(opts.Serialize())
-			if opts.Threaded {
-				execOpts.ExecFlags |= flatrpc.ExecFlagThreaded
-			}
-		}
-	}
-
-	execOpts.ExecFlags |= flatrpc.ExecFlagCollectCover | flatrpc.ExecFlagCollectSignal
-
 	target, err := prog.GetTarget(targets.Linux, args.TargetArch)
 	if err != nil {
 		return "", err
 	}
 
 	// We perform normalization so that the cache key is calculated correctly.
-	p, err := target.Deserialize([]byte(args.ReproSyz), prog.Strict)
+	p, err := target.Deserialize([]byte(args.SeedSyz), prog.Strict)
 	if err != nil {
 		return "", err
 	}
-	args.ReproSyz = string(p.Serialize())
+	args.SeedSyz = string(p.Serialize())
 
 	desc := fmt.Sprintf("seed-exec: kernel commit %v, kernel config hash %v, image hash %v,"+
-		" vm %v, vm config hash %v, syz repro hash %v, opts hash %v",
+		" vm %v, vm config hash %v, syz repro hash %v",
 		args.KernelCommit, hash.String(args.KernelConfig), hash.String(imageData),
-		args.Type, hash.String(args.VM), hash.String(args.ReproSyz), hash.String(args.ReproOpts))
+		args.Type, hash.String(args.VM), hash.String(args.SeedSyz))
 
 	cached, cachedID, err := aflow.CacheObject(ctx, "seed-exec", desc, func() (cachedExecution, error) {
 		var res cachedExecution
-		res.ReproSyz = args.ReproSyz
+		res.BaseTestSeed = baseTestSeed
+		res.GeneratedSyz = generatedSyz
 		workdir, err := ctx.TempDir()
 		if err != nil {
 			return res, err
 		}
 
-		cfg, err := buildConfig(args, workdir)
+		cfg, err := buildConfig(args.TargetConfig, workdir)
 		if err != nil {
 			return res, err
 		}
@@ -96,15 +78,17 @@ func ExecuteSeedFunc(ctx *aflow.Context, args ReproduceArgs) (string, error) {
 			return res, fmt.Errorf("failed to get runner manager: %w", err)
 		}
 
-		runRes, crashRep, err := rm.Submit(ctx.Context, p, execOpts)
+		runRes, err := rm.Submit(ctx.Context, p)
 		if err != nil {
 			return res, aflow.FlowError(fmt.Errorf("RunnerManager Submit failed: %w", err))
 		}
 
-		log.Logf(0, "VM Console Output:\n%s", runRes.Output)
-		if crashRep != nil {
-			res.BugTitle = crashRep.Title
-			res.Report = string(crashRep.Report)
+		log.Logf(1, "VM Console Output:\n%s", runRes.Output)
+
+		crashes := rm.RecentCrashes()
+		if len(crashes) > 0 {
+			res.BugTitle = crashes[0].Title
+			res.Report = fmt.Sprintf("The kernel crashed after one of the previous executions:\n%s", string(crashes[0].Report))
 		}
 
 		if runRes.Status == queue.ExecFailure && runRes.Err != nil {
@@ -147,7 +131,7 @@ func extractCoverage(info *flatrpc.ProgInfo, cfg *mgrconfig.Config) ([][]symboli
 		cov = append(cov, nil)
 	}
 	if len(cov) > 0 {
-		args := ReproduceArgs{
+		args := TargetConfig{
 			TargetArch: cfg.TargetArch,
 			Type:       cfg.Type,
 			KernelObj:  cfg.KernelObj,
@@ -160,4 +144,38 @@ func extractCoverage(info *flatrpc.ProgInfo, cfg *mgrconfig.Config) ([][]symboli
 		return symbolized, nil
 	}
 	return nil, nil
+}
+
+// CombineSyzPrograms concatenates a base test seed (read from disk) and a generated syz program.
+// It returns the combined program, the number of lines in the base seed, and any error encountered.
+func CombineSyzPrograms(baseTestSeed, generatedSyz string) (string, int, error) {
+	if baseTestSeed == "" {
+		return generatedSyz, 0, nil
+	}
+	data, err := sys.Files.ReadFile(path.Join("linux", baseTestSeed))
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to read BaseTestSeed: %w", err)
+	}
+	baseLines := len(strings.Split(string(data), "\n"))
+	return string(data) + "\n" + generatedSyz, baseLines, nil
+}
+
+// BaseSeedCallCount parses the base test seed and returns the number of calls it contains.
+func BaseSeedCallCount(baseTestSeed, targetArch string) (int, error) {
+	if baseTestSeed == "" {
+		return 0, nil
+	}
+	data, err := sys.Files.ReadFile(path.Join("linux", baseTestSeed))
+	if err != nil {
+		return 0, fmt.Errorf("failed to read BaseTestSeed: %w", err)
+	}
+	pt, err := prog.GetTarget(targets.Linux, targetArch)
+	if err != nil {
+		return 0, err
+	}
+	p, err := pt.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		return 0, err
+	}
+	return len(p.Calls), nil
 }

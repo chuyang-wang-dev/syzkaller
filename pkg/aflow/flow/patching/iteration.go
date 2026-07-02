@@ -93,6 +93,7 @@ func init() {
 		&aflow.Flow{
 			Consts: map[string]any{
 				"NeedStrace": false,
+				"Procs":      1,
 			},
 			Root: aflow.Pipeline(
 				// Setup base kernel for code tools.

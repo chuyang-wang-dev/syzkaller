@@ -10,43 +10,63 @@ import (
 
 	"github.com/google/syzkaller/pkg/aflow"
 	"github.com/google/syzkaller/pkg/aflow/action/crash"
+	"github.com/google/syzkaller/pkg/aflow/tool/codesearcher"
 )
 
-type SummarizerArgs struct {
-	ExecutionCachedID string `jsonschema:"The cached ID of the execution."`
-	SyzProgram        string `jsonschema:"The full generated syzkaller program."`
-	TargetPC          string `jsonschema:"The exact target PC address."`
-	TargetFile        string `jsonschema:"The exact file path containing the Target PC."`
-	Question          string `jsonschema:"What you want the subagent to analyze."`
+type SummarizerInputs struct {
+	LastFailedExecutionCachedID string
+	File                        string
+	PC                          uint64
 }
 
-var ExecutionSummarizer = &aflow.LLMTool[SummarizerArgs]{
-	Name:     "execution-summarizer",
-	Model:    aflow.GoodBalancedModel,
-	TaskType: aflow.FormalReasoningTask,
-	Description: "Summarizes the execution of a syzkaller program, identifying the deepest point of execution. " +
-		"You MUST pass the ExecutionCachedID, the syzlang program source code, " +
-		"and your target constraints (including TargetFile and TargetPC) in your query.",
-	Instruction: summarizerInstruction,
-	Tools: aflow.Tools(
-		CoverageFiles, FileCoverage, ExecutionTrace,
-	),
-	PromptBuilder: func(ctx *aflow.Context, args SummarizerArgs) (string, error) {
+type SummarizerOutputs struct {
+	LastFailureSummary string `jsonschema:"Detailed summary of execution divergence and all relevant info."`
+}
+
+type SummarizerContext struct {
+	ExecutionSummaryContext string
+}
+
+var ActionPrepareSummarizer = aflow.NewFuncAction("prepare-summarizer",
+	func(ctx *aflow.Context, args SummarizerInputs) (SummarizerContext, error) {
 		stateMap := ctx.StateMap()
 		b, _ := json.Marshal(stateMap)
 		var state reproduceState
 		json.Unmarshal(b, &state)
 
-		coverage, err := crash.LoadCoverage(ctx, args.ExecutionCachedID)
+		coverage, err := crash.LoadCoverage(ctx, args.LastFailedExecutionCachedID)
 		if err != nil {
-			return "", err
+			return SummarizerContext{}, err
+		}
+
+		baseSeed, generated, err := crash.LoadProgramDetails(ctx, args.LastFailedExecutionCachedID)
+		if err != nil {
+			return SummarizerContext{}, fmt.Errorf("failed to load program for ExecutionCachedID: %w", err)
+		}
+		syzProgram := generated
+		if baseSeed != "" {
+			syzProgram = "// Base Test Seed: " + baseSeed + "\n" + generated
+		}
+
+		targetFile := args.File
+		targetPC := "Unknown"
+		if args.PC != 0 {
+			targetPC = fmt.Sprintf("0x%x", args.PC)
+		}
+
+		baseCallsCount, err := crash.BaseSeedCallCount(baseSeed, state.TargetArch)
+		if err != nil {
+			return SummarizerContext{}, fmt.Errorf("failed to get base test seed calls: %w", err)
 		}
 
 		var traceBuilder strings.Builder
 		traceBuilder.WriteString("Execution Trace (All Syscalls):\n")
 		for i := range coverage {
+			if i < baseCallsCount {
+				continue
+			}
 			tr := processSyscallTrace(i, coverage[i], ExecutionTraceArgs{IncludeNoise: false})
-			traceBuilder.WriteString(fmt.Sprintf("Syscall %d:\n", tr.CallIndex))
+			traceBuilder.WriteString(fmt.Sprintf("Syscall %d:\n", tr.CallIndex-baseCallsCount))
 			for _, frame := range tr.Trace {
 				traceBuilder.WriteString(fmt.Sprintf("  %s\n", frame))
 			}
@@ -54,19 +74,19 @@ var ExecutionSummarizer = &aflow.LLMTool[SummarizerArgs]{
 		}
 
 		covStr := "No target file provided."
-		if args.TargetFile != "" {
+		if targetFile != "" {
 			covRes, err := getFileCoverage(ctx, state, FileCoverageArgs{
-				ExecutionCachedID: args.ExecutionCachedID,
-				Filename:          args.TargetFile,
+				ExecutionCachedID: args.LastFailedExecutionCachedID,
+				Filename:          targetFile,
 			})
 			if err == nil {
 				covStr = strings.Join(covRes.Snippets, "\n")
 			} else {
-				covStr = fmt.Sprintf("Failed to get coverage for %s: %v", args.TargetFile, err)
+				covStr = fmt.Sprintf("Failed to get coverage for %s: %v", targetFile, err)
 			}
 		}
 
-		return fmt.Sprintf(`Target Execution Details:
+		contextStr := fmt.Sprintf(`Target Execution Details:
 - ExecutionCachedID: %s
 - Target PC: %s
 
@@ -78,23 +98,38 @@ Coverage for Target File (%s):
 %s
 
 Question from Parent Agent:
-%s`, args.ExecutionCachedID, args.TargetPC, args.SyzProgram,
-			traceBuilder.String(), args.TargetFile, covStr, args.Question), nil
-	},
+Why did this program fail to reach the target PC?`, args.LastFailedExecutionCachedID, targetPC, syzProgram,
+			traceBuilder.String(), targetFile, covStr)
+
+		return SummarizerContext{ExecutionSummaryContext: contextStr}, nil
+	})
+
+var SummarizerAgent = &aflow.LLMAgent{
+	Name:     "execution-summarizer",
+	Model:    aflow.GoodBalancedModel,
+	TaskType: aflow.FormalReasoningTask,
+	Outputs: aflow.ValidatedLLMOutputs(
+		func(ctx *aflow.Context, state struct{}, outputs SummarizerOutputs) (SummarizerOutputs, error) {
+			return outputs, nil
+		}),
+	Instruction: summarizerInstruction,
+	Tools: aflow.Tools(
+		CoverageFiles, FileCoverage, ExecutionTrace, DisassembleContext, codesearcher.Tools,
+	),
+	Prompt: `{{.ExecutionSummaryContext}}`,
 }
 
 const summarizerInstruction = `
-You are an expert in analyzing kernel executions. Your task is to compress and summarize the execution of a syzkaller
+You are an expert in analyzing kernel executions. Your task is to comprehensively analyze the execution of a syzkaller
 program, identifying the deepest point of execution before divergence and explaining why it diverged.
 You must base all your claims on the provided execution trace and coverage information.
 If you don't have enough information, you MUST state that instead of guessing.
 
 The main agent has provided you with:
-1. The ExecutionCachedID.
-2. The target constraint (e.g., target file, and PC address).
-3. The full syzkaller program that was executed.
-4. The formatted execution traces for all syscalls.
-5. The source code coverage snippets for the target file.
+1. The target constraint (e.g., target file, and PC address).
+2. The full syzkaller program that was executed.
+3. The formatted execution traces for all syscalls.
+4. The source code coverage snippets for the target file.
 
 Instructions:
 1. Review the initial Execution Trace and File Coverage provided by the main agent. The initial
@@ -105,9 +140,11 @@ Instructions:
    of covered files, if there are multiple interesting files, you MUST use the 'get-file-coverage' tool
    simultaneously for ALL of those files in the same response. Do not fetch coverage one by one.
 4. Find the deepest point or the exact divergence point in the trace.
-5. Provide a concise, highly relevant summary back to the main agent.
+5. Provide a highly detailed and comprehensive summary back to the main agent.
 
 CRITICAL: You MUST reason about *why* the execution diverged and provide a high-level, semantic 
-summary of the failure (e.g., 'syscall X returned EINVAL because flag Y was missing') so the manager 
-can adjust its strategy. Do not focus excessively on low-level syntax.
+summary of the failure (e.g., 'syscall X returned EINVAL because flag Y was missing'). You MUST 
+include ALL possible information relevant to the divergence, such as variable values, error codes, 
+and control flow conditions, so the manager can fully understand the failure context and adjust 
+its strategy. Do not focus excessively on low-level syntax.
 `

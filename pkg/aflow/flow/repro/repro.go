@@ -48,6 +48,7 @@ func init() {
 				"DocSyscallDescriptionsSyntax": docs.SyscallDescriptionsSyntax,
 				"ReproC":                       "", // is needed by crash.Reproduce
 				"NeedStrace":                   false,
+				"Procs":                        1,
 			},
 			Root: aflow.Pipeline(
 				kernel.Checkout,

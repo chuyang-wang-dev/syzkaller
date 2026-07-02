@@ -6,7 +6,6 @@ package seedgen
 
 import (
 	"encoding/json"
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -55,26 +54,17 @@ func init() {
 				codesearcher.ActionExtractIndirectCallers,
 				&aflow.DoWhile{
 					While:         "ContinueLoop",
-					MaxIterations: 250,
+					MaxIterations: 20,
 					Do: aflow.Pipeline(
-						ManagerAgent,
-						ActionCheckGiveUp,
 						&aflow.If{
-							Condition: "RunCoder",
+							Condition: "LastFailedExecutionCachedID",
 							Do: aflow.Pipeline(
-								CoderAgent,
-								ActionVerifyPCReached,
-								&aflow.If{
-									Condition: "RunSummarizer",
-									Do: aflow.Pipeline(
-										ActionPrepareSummarizer,
-										SummarizerAgent,
-										ActionAppendSummary,
-									),
-								},
+								syzlang.ActionPrepareSummarizer,
+								syzlang.SummarizerAgent,
 							),
 						},
-						ActionUpdateLoopState,
+						GeneratorAgent,
+						ActionVerifyPCAndLoopState,
 					),
 				},
 				ActionFormatOutput,
@@ -84,7 +74,6 @@ func init() {
 }
 
 type FormatOutputArgs struct {
-	BaseTestSeed      string
 	ExecutionCachedID string
 	GeneratorGiveUp   bool
 	GeneratorReason   string
@@ -96,18 +85,17 @@ var ActionFormatOutput = aflow.NewFuncAction("format-output",
 		seedSyz := ""
 		if args.ExecutionCachedID != "" {
 			var err error
-			seedSyz, err = crash.LoadProgram(ctx, args.ExecutionCachedID)
+			baseSeed, generated, err := crash.LoadProgramDetails(ctx, args.ExecutionCachedID)
 			if err != nil {
 				return ai.SeedGenOutputs{}, aflow.BadCallError("failed to read program from cache: %v", err)
 			}
-		}
-		if args.BaseTestSeed != "" {
-			data, err := syzlang.GetTestSeed(args.BaseTestSeed)
-			if err != nil {
-				return ai.SeedGenOutputs{}, aflow.BadCallError("failed to read BaseTestSeed: %v", err)
+			if baseSeed != "" {
+				seedSyz = "// Base Test Seed: " + baseSeed + "\n" + generated
+			} else {
+				seedSyz = generated
 			}
-			seedSyz = string(data) + "\n" + seedSyz
 		}
+
 		return ai.SeedGenOutputs{
 			SeedSyz: seedSyz,
 			Success: args.PCReached,
@@ -142,116 +130,48 @@ func parsePCAction(ctx *aflow.Context, args ParsePCArgs) (ParsePCResult, error) 
 	return ParsePCResult{PC: pc}, err
 }
 
-type UpdateLoopStateArgs struct {
-	GeneratorGiveUp bool
-	PCReached       bool
-}
-
-type UpdateLoopStateResult struct {
-	ContinueLoop string
-}
-
-type CheckGiveUpArgs struct {
-	GeneratorGiveUp bool
-}
-
-type CheckGiveUpResult struct {
-	RunCoder bool
-}
-
-var ActionCheckGiveUp = aflow.NewFuncAction("check-give-up",
-	func(ctx *aflow.Context, args CheckGiveUpArgs) (CheckGiveUpResult, error) {
-		return CheckGiveUpResult{RunCoder: !args.GeneratorGiveUp}, nil
-	})
-
-var ActionUpdateLoopState = aflow.NewFuncAction("update-loop-state",
-	func(ctx *aflow.Context, args UpdateLoopStateArgs) (UpdateLoopStateResult, error) {
-		if args.GeneratorGiveUp || args.PCReached {
-			return UpdateLoopStateResult{ContinueLoop: ""}, nil
-		}
-		return UpdateLoopStateResult{ContinueLoop: "yes"}, nil
-	})
-
-type VerifyPCReachedArgs struct {
+type VerifyPCAndLoopStateArgs struct {
 	ExecutionCachedID string
-	PC                uint64
 	GeneratorGiveUp   bool
+	GeneratorReason   string
+	PC                uint64
 }
 
-type VerifyPCReachedResult struct {
-	PCReached     bool
-	RunSummarizer bool
+type VerifyPCAndLoopStateResult struct {
+	ContinueLoop                string
+	PCReached                   bool
+	LastFailedExecutionCachedID string
+	LastFailedBaseTestSeed      string
+	LastFailedGeneratedSyz      string
 }
 
-var ActionVerifyPCReached = aflow.NewFuncAction("seedgen-verify-pc-reached",
-	func(ctx *aflow.Context, args VerifyPCReachedArgs) (VerifyPCReachedResult, error) {
-		if args.GeneratorGiveUp || args.ExecutionCachedID == "" {
-			return VerifyPCReachedResult{PCReached: false, RunSummarizer: false}, nil
+var ActionVerifyPCAndLoopState = aflow.NewFuncAction("seedgen-verify-pc-and-loop",
+	func(ctx *aflow.Context, args VerifyPCAndLoopStateArgs) (VerifyPCAndLoopStateResult, error) {
+		if args.GeneratorGiveUp {
+			return VerifyPCAndLoopStateResult{ContinueLoop: "", PCReached: false}, nil
 		}
+		if args.ExecutionCachedID == "" {
+			// This shouldn't happen due to GeneratorAgent output validation, but handle it safely.
+			return VerifyPCAndLoopStateResult{ContinueLoop: "yes", PCReached: false}, nil
+		}
+
 		reached, err := crash.CheckPCInCoverage(ctx, args.ExecutionCachedID, args.PC)
 		if err != nil {
-			return VerifyPCReachedResult{PCReached: false, RunSummarizer: false}, err
+			return VerifyPCAndLoopStateResult{}, err
 		}
-		return VerifyPCReachedResult{PCReached: reached, RunSummarizer: !reached}, nil
-	})
 
-type PrepareSummarizerArgs struct {
-	ExecutionCachedID string
-	PC                uint64
-	File              string
-}
-
-type PrepareSummarizerResult struct {
-	ExecutionSummarizerPrompt string
-}
-
-var ActionPrepareSummarizer = aflow.NewFuncAction("prepare-summarizer",
-	func(ctx *aflow.Context, args PrepareSummarizerArgs) (PrepareSummarizerResult, error) {
-		candidateSeedSyz, err := crash.LoadProgram(ctx, args.ExecutionCachedID)
-		if err != nil {
-			return PrepareSummarizerResult{}, err
+		if reached {
+			return VerifyPCAndLoopStateResult{ContinueLoop: "", PCReached: true}, nil
 		}
-		toolArgs := syzlang.SummarizerArgs{
-			ExecutionCachedID: args.ExecutionCachedID,
-			SyzProgram:        candidateSeedSyz,
-			TargetPC:          fmt.Sprintf("0x%x", args.PC),
-			TargetFile:        args.File,
-			Question:          "Analyze why this execution failed to reach the target PC.",
+		res := VerifyPCAndLoopStateResult{
+			ContinueLoop:                "yes",
+			PCReached:                   false,
+			LastFailedExecutionCachedID: args.ExecutionCachedID,
 		}
-		prompt, err := syzlang.ExecutionSummarizer.PromptBuilder(ctx, toolArgs)
-		if err != nil {
-			return PrepareSummarizerResult{}, err
+		baseSeed, generated, err := crash.LoadProgramDetails(ctx, args.ExecutionCachedID)
+		if err == nil {
+			res.LastFailedBaseTestSeed = baseSeed
+			res.LastFailedGeneratedSyz = generated
 		}
-		return PrepareSummarizerResult{ExecutionSummarizerPrompt: prompt}, nil
-	})
-
-var SummarizerAgent = &aflow.LLMAgent{
-	Name:        syzlang.ExecutionSummarizer.Name,
-	Model:       syzlang.ExecutionSummarizer.Model,
-	TaskType:    syzlang.ExecutionSummarizer.TaskType,
-	Instruction: syzlang.ExecutionSummarizer.Instruction,
-	Tools:       syzlang.ExecutionSummarizer.Tools,
-	Prompt:      "{{.ExecutionSummarizerPrompt}}",
-	Outputs: aflow.LLMOutputs[struct {
-		Summary string `jsonschema:"The summary of the execution divergence."`
-	}](),
-}
-
-type AppendSummaryArgs struct {
-	Summary               string
-	FailedStrategySummary string
-}
-
-type AppendSummaryResult struct {
-	FailedStrategySummary string
-}
-
-var ActionAppendSummary = aflow.NewFuncAction("append-summary",
-	func(ctx *aflow.Context, args AppendSummaryArgs) (AppendSummaryResult, error) {
-		newSummary := args.FailedStrategySummary
-		if newSummary != "" {
-			newSummary += "\n\n"
-		}
-		newSummary += args.Summary
-		return AppendSummaryResult{FailedStrategySummary: newSummary}, nil
+		return res, nil
 	})
