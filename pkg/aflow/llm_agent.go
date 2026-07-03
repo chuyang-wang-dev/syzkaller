@@ -53,6 +53,8 @@ type LLMAgent struct {
 	// Whether this agent is being run as a sub-agent by another agent.
 	// Used to control truncation behavior (sub-agents can be forced to answer now).
 	SubAgent bool
+	// InitialMessages overrides the default single-prompt initialization of a.req.
+	InitialMessages func(*Context) ([]llmMessage, error)
 
 	// Token limit for historical messages. If > 0, when the total input tokens exceed this limit,
 	// the agent will pause, call a cheaper model to summarize the entire history, and then drop
@@ -62,6 +64,9 @@ type LLMAgent struct {
 	// Maximum number of iterations for the agent execution.
 	// If 0, default to defaultMaxLLMIterations (250).
 	MaxIterations int
+
+	// Optional evaluator/judge agent that is invoked after each iteration to inspect history.
+	Judge *LLMJudge
 }
 
 type agentSession struct {
@@ -353,10 +358,18 @@ func (a *agentSession) tryAnswerNow(cfg *backend.GenerateConfig, overflow bool) 
 
 func (a *agentSession) chat(ctx *Context, cfg *backend.GenerateConfig, tools map[string]Tool,
 	instruction, prompt string, candidate int) (string, map[string]any, error) {
-	a.req = []llmMessage{{content: &backend.Message{
-		Role:  backend.RoleUser,
-		Parts: []backend.Part{{Text: prompt}},
-	}}}
+	if a.InitialMessages != nil {
+		var err error
+		a.req, err = a.InitialMessages(ctx)
+		if err != nil {
+			return "", nil, err
+		}
+	} else {
+		a.req = []llmMessage{{content: &backend.Message{
+			Role:  backend.RoleUser,
+			Parts: []backend.Part{{Text: prompt}},
+		}}}
+	}
 	var anchorTokens int
 	for iter := 0; iter < a.maxIterations || a.tryAnswerNow(cfg, false); iter++ {
 		var currentInputTokens int
@@ -425,24 +438,22 @@ func (a *agentSession) chat(ctx *Context, cfg *backend.GenerateConfig, tools map
 		})
 
 		if len(calls) == 0 {
-			reply, wrong, err := a.checkFinalReply(ctx, reply)
+			reply, outputs, ok, err := a.handleFinalReply(ctx, reply)
 			if err != nil {
 				return "", nil, err
 			}
-			if wrong != "" {
-				a.req = append(a.req, llmMessage{content: &backend.Message{
-					Role:  backend.RoleUser,
-					Parts: []backend.Part{{Text: wrong}},
-				}})
+			if ok {
 				continue
 			}
-			// This is the final reply.
-			return reply, a.outputs, nil
+			return reply, outputs, nil
 		}
 		// This is not the final reply, LLM asked to execute some tools.
 		// Append the current reply, and tool responses to the next request.
 		err = a.callTools(ctx, tools, calls)
 		if err != nil {
+			return "", nil, err
+		}
+		if err := a.evaluateJudge(ctx, iter); err != nil {
 			return "", nil, err
 		}
 		if a.outputs != nil {
@@ -472,6 +483,37 @@ func (a *agentSession) updateInputTokens(inputTokens int, anchorTokens *int) {
 	}
 }
 
+func (a *agentSession) handleFinalReply(ctx *Context, reply string) (string, map[string]any, bool, error) {
+	reply, wrong, err := a.checkFinalReply(ctx, reply)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if wrong != "" {
+		a.req = append(a.req, llmMessage{content: &backend.Message{
+			Role:  backend.RoleUser,
+			Parts: []backend.Part{{Text: wrong}},
+		}})
+		return "", nil, true, nil
+	}
+	return reply, a.outputs, false, nil
+}
+
+func (a *agentSession) evaluateJudge(ctx *Context, iter int) error {
+	if a.Judge == nil {
+		return nil
+	}
+	if iter < a.Judge.MinIterations || (iter-a.Judge.MinIterations)%a.Judge.EvaluationInterval != 0 {
+		return nil
+	}
+	decision, err := a.Judge.Evaluate(ctx, a.req)
+	if err != nil {
+		return fmt.Errorf("judge agent failed: %w", err)
+	}
+	if decision.Stop {
+		return BadCallError("judge agent stopped execution: %s", decision.Reason)
+	}
+	return nil
+}
 func (a *agentSession) checkFinalReply(ctx *Context, reply string) (string, string, error) {
 	if a.Outputs != nil && a.outputs == nil {
 		// LLM did not call set-results.
@@ -913,7 +955,9 @@ func (a *LLMAgent) verify(ctx *verifyContext) {
 	// Verify dataflow. All dynamic variables must be provided by inputs,
 	// or preceding actions.
 	a.verifyTemplate(ctx, "Instruction", a.Instruction)
-	a.verifyTemplate(ctx, "Prompt", a.Prompt)
+	if a.InitialMessages == nil {
+		a.verifyTemplate(ctx, "Prompt", a.Prompt)
+	}
 	for _, tool := range a.Tools {
 		name := tool.declaration().Name
 		if !toolNameRe.MatchString(name) {
@@ -932,6 +976,11 @@ func (a *LLMAgent) verify(ctx *verifyContext) {
 		if a.Outputs != nil {
 			a.Outputs.tool.verify(ctx)
 			a.Outputs.provideOutputs(ctx, a.Name, a.Candidates > 1)
+		}
+	}
+	if a.Judge != nil {
+		if err := a.Judge.verify(); err != nil {
+			ctx.errorf(a.Name, "judge verification failed: %v", err)
 		}
 	}
 }
