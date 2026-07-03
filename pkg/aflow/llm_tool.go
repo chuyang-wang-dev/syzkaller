@@ -29,6 +29,9 @@ type LLMTool[Args any] struct {
 	// into the final text prompt that initializes the subagent's conversation.
 	PromptBuilder func(ctx *Context, args Args) (string, error)
 
+	// Optional evaluator/judge agent that is invoked after each iteration to inspect history.
+	Judge *LLMJudge
+
 	agent *LLMAgent
 }
 
@@ -87,6 +90,7 @@ func (t *LLMTool[Args]) verify(ctx *verifyContext) {
 		Instruction: t.Instruction,
 		Prompt:      fmt.Sprintf("{{.%v}}", llmToolPrompt),
 		Tools:       t.Tools,
+		Judge:       t.Judge,
 	}
 	t.agent.verify(ctx)
 }
