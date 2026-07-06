@@ -6,6 +6,8 @@ package aflow
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"reflect"
 
 	"github.com/google/syzkaller/pkg/aflow/backend"
 )
@@ -14,9 +16,8 @@ import (
 // It can have own tools, different from the parent LLM agent.
 // It can do complex multi-step research, and provide a concise answer to the parent LLM
 // without polluting its context window.
-type LLMTool[Args any] struct {
+type LLMTool[State, Args any] struct {
 	// Most fields match that of LLMAgent.
-	// The prompt is not specified here, and is provided by the parent LLM.
 	Name     string
 	Model    backend.ModelCategory
 	TaskType TaskType
@@ -25,9 +26,8 @@ type LLMTool[Args any] struct {
 	Instruction string
 	Tools       []Tool
 
-	// PromptBuilder converts the structured JSON arguments provided by the parent LLM
-	// into the final text prompt that initializes the subagent's conversation.
-	PromptBuilder func(ctx *Context, args Args) (string, error)
+	// Prompt template for the subagent, formatted using both State and Args.
+	Prompt string
 
 	// Optional evaluator/judge agent that is invoked after each iteration to inspect history.
 	Judge *LLMJudge
@@ -43,7 +43,7 @@ type llmToolResults struct {
 	Answer string `jsonschema:"Answer to your question."`
 }
 
-func (t *LLMTool[Args]) declaration() *backend.FunctionDeclaration {
+func (t *LLMTool[State, Args]) declaration() *backend.FunctionDeclaration {
 	return &backend.FunctionDeclaration{
 		Name:                 t.Name,
 		Description:          t.Description,
@@ -52,17 +52,26 @@ func (t *LLMTool[Args]) declaration() *backend.FunctionDeclaration {
 	}
 }
 
-func (t *LLMTool[Args]) execute(ctx *Context, args map[string]any) (map[string]any, error) {
+func (t *LLMTool[State, Args]) execute(ctx *Context, args map[string]any) (map[string]any, error) {
+	s, err := convertFromMap[State](ctx.state, false, true)
+	if err != nil {
+		return nil, err
+	}
 	a, err := convertFromMap[Args](args, false, true)
 	if err != nil {
 		return nil, err
 	}
-	// We temporarily use ctx.state to provide the prompt to the agent,
-	// and extract the reply.
-	prompt, err := t.PromptBuilder(ctx, a)
-	if err != nil {
-		return nil, err
+
+	combined := make(map[string]any)
+	maps.Copy(combined, convertToMap(s))
+	maps.Copy(combined, convertToMap(a))
+	for _, tool := range t.Tools {
+		name := tool.declaration().Name
+		combined[toolTemplateName(name)] = name
 	}
+
+	prompt := formatTemplate(t.Prompt, combined)
+
 	ctx.state[llmToolPrompt] = prompt
 	defer delete(ctx.state, llmToolPrompt)
 	if err := t.agent.execute(ctx); err != nil {
@@ -81,7 +90,22 @@ const (
 	llmToolReply  = "AFLOW_LLMTOOL_REPLY"
 )
 
-func (t *LLMTool[Args]) verify(ctx *verifyContext) {
+func (t *LLMTool[State, Args]) verify(ctx *verifyContext) {
+	ctx.requireNotEmpty(t.Name, "Name", t.Name)
+	ctx.requireNotEmpty(t.Name, "Description", t.Description)
+	requireSchema[Args](ctx, t.Name, "Args")
+	requireInputs[State](ctx, t.Name)
+
+	vars := make(map[string]reflect.Type)
+	maps.Insert(vars, foreachFieldOf[State]())
+	maps.Insert(vars, foreachFieldOf[Args]())
+	for _, tool := range t.Tools {
+		vars[toolTemplateName(tool.declaration().Name)] = reflect.TypeFor[string]()
+	}
+	if _, err := verifyTemplate(t.Prompt, vars); err != nil {
+		ctx.errorf(t.Name, "invalid prompt template: %v", err)
+	}
+
 	t.agent = &LLMAgent{
 		Name:        t.Name,
 		Model:       t.Model,

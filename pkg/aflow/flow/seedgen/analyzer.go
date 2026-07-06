@@ -1,9 +1,6 @@
 package seedgen
 
 import (
-	"bytes"
-	"text/template"
-
 	"github.com/google/syzkaller/pkg/aflow"
 	"github.com/google/syzkaller/pkg/aflow/flow/common"
 	"github.com/google/syzkaller/pkg/aflow/tool/codesearcher"
@@ -15,7 +12,7 @@ type AnalyzerQuery struct {
 	Query string `jsonschema:"The specific research task or question."`
 }
 
-var SeedgenAnalyzer = aflow.LLMTool[AnalyzerQuery]{
+var SeedgenAnalyzer = aflow.LLMTool[struct{}, AnalyzerQuery]{
 	Name: "seedgen-analyzer",
 	Description: "Use this tool to explore the codebase. Provide a specific query, " +
 		"and it will search the codebase and return a concise summary of the findings.",
@@ -66,15 +63,5 @@ findings in your final reply. Always include the file name and line number if yo
 (CRITICAL INSTRUCTION) Focus on the most actionable information (e.g., specific syscalls, sysfs files,
 or netlink commands) and do not list excessive or irrelevant caller paths.` +
 		common.InstructionDontMakeAssumptionsAboutSourceCode,
-	PromptBuilder: func(ctx *aflow.Context, args AnalyzerQuery) (string, error) {
-		tmpl, err := template.New("").Parse(`Query: {{.Query}}`)
-		if err != nil {
-			return "", err
-		}
-		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, args); err != nil {
-			return "", err
-		}
-		return buf.String(), nil
-	},
+	Prompt: `Query: {{.Query}}`,
 }

@@ -1,8 +1,6 @@
 package syzlang
 
 import (
-	"fmt"
-
 	"github.com/google/syzkaller/pkg/aflow"
 )
 
@@ -12,7 +10,7 @@ type CodeFixerArgs struct {
 	IgnoreCallErrors bool   `jsonschema:"Ignore syscall execution call errors if target is in an error path."`
 }
 
-var CodeFixer = &aflow.LLMTool[CodeFixerArgs]{
+var CodeFixer = &aflow.LLMTool[struct{}, CodeFixerArgs]{
 	Name:     "code-fixer",
 	Model:    aflow.Temporary35FlashOnlyModel,
 	TaskType: aflow.FormalReasoningTask,
@@ -87,21 +85,19 @@ var CodeFixer = &aflow.LLMTool[CodeFixerArgs]{
 			"- Set Stop = false if the subagent is introducing new changes, trying new paths, " +
 			"or making progress towards resolving the errors.",
 	},
-	PromptBuilder: func(ctx *aflow.Context, args CodeFixerArgs) (string, error) {
-		baseSeedPrompt := ""
-		if args.BaseTestSeed != "" {
-			baseSeedPrompt = fmt.Sprintf("Base Test Seed: %s\n\n", args.BaseTestSeed)
-		}
-		ignoreCallErrorsPrompt := ""
-		if args.IgnoreCallErrors {
-			ignoreCallErrorsPrompt = "CRITICAL INSTRUCTION: You are debugging a program where the target PC " +
-				"is expected to be in an error path. Thus, call errors (syscalls returning an error like EINVAL, " +
-				"EFAULT, etc.) are expected and acceptable. Do NOT try to fix call errors, and do NOT fail. " +
-				"You MUST treat the execution as successful even if there are call errors, as long as it " +
-				"compiles successfully (i.e. you got an ExecutionCachedID as response). " +
-				"Immediately yield by returning the ExecutionCachedID of the run.\n\n"
-		}
-		return fmt.Sprintf("%sPreconditions:\n%v\n\n%sGenerator's Syzlang Program:\n%v",
-			ignoreCallErrorsPrompt, ctx.StateMap()["TargetPreconditions"], baseSeedPrompt, args.SyzProgram), nil
-	},
+	Prompt: `{{if .IgnoreCallErrors}}CRITICAL INSTRUCTION: You are debugging a program where ` +
+		`the target PC is expected to be in an error path. Thus, call errors (syscalls returning ` +
+		`an error like EINVAL, EFAULT, etc.) are expected and acceptable.
+` +
+		`Do NOT try to fix call errors, and do NOT fail.
+` +
+		`You MUST treat the execution as successful even if there are call errors, as long as ` +
+		`it compiles successfully (i.e. you got an ExecutionCachedID as response).
+` +
+		`Immediately yield by returning the ExecutionCachedID of the run.
+
+{{end}}{{if .BaseTestSeed}}Base Test Seed: {{.BaseTestSeed}}
+
+{{end}}Generator's Syzlang Program:
+{{.SyzProgram}}`,
 }
