@@ -27,13 +27,15 @@ var CodeFixer = &aflow.LLMTool[CodeFixerArgs]{
 		"like devices or file system.\n" +
 		"Your job is ONLY to debug any syntax/compilation or call errors in the provided syzlang program.\n" +
 		"Do NOT generate new logic to reach something or debug why something is not reached.\n" +
-		"If the seed executes successfully (i.e. returns an ExecutionCachedID and " +
+		"If the seed executes successfully (i.e. '{{.toolExecuteSeed}}' returns an ExecutionCachedID and " +
 		"either CallErrors is empty or you are instructed to ignore call errors), " +
 		"you MUST immediately yield by returning the ExecutionCachedID as your final reply. " +
-		"It is NOT your job to reason or double check the program.\n" +
+		"DO NOT call any other tool (e.g. '{{.toolSyzGrepper}}' or '{{.toolReadSyzSpec}}') to double check or verify. " +
+		"It is NOT your job to reason, verify, or simplify the program. " +
+		"Do NOT ask yourself if you can simplify it further.\n" +
 		"You MUST:\n" +
-		"1. Execute the syzlang program using '{{.toolExecuteSeed}}'. IMPORTANT: You must pass the BaseTestSeed " +
-		"to the tool if one was provided in your prompt.\n" +
+		"1. Execute the syzlang program using '{{.toolExecuteSeed}}'. " +
+		"(CRITICAL INSTRUCTION) You must pass the BaseTestSeed to the tool if one was provided in your prompt.\n" +
 		"   Any errors in the base test seed will be returned separately. Do NOT try to fix base test seed " +
 		"errors, they indicate environment failures.\n" +
 		"   The 'Index' of the CallErrors returned are 0-based and relative ONLY to the generated syzlang " +
@@ -43,7 +45,8 @@ var CodeFixer = &aflow.LLMTool[CodeFixerArgs]{
 		"3. Execute again until you get one successful execution " +
 		"(i.e. no compiler errors, and also no call errors unless you are instructed to ignore them).\n" +
 		"4. Provide the ExecutionCachedID as your final text reply.\n" +
-		"Do NOT attempt to verify PC coverage or diagnose divergence. That will be handled by the pipeline.\n\n" +
+		"Do NOT attempt to verify PC coverage, diagnose divergence, or simplify the program. " +
+		"That will be handled by the pipeline.\n\n" +
 		"CRITICAL SYZLANG CONSTRAINTS:\n" +
 		"- Arrays vs Buffers: Array arguments MUST be formatted as `[val1, val2]` " +
 		"while Buffer arguments MUST be formatted as strings (e.g. `\"\\x00\\x01\"` or `'string'`). " +
@@ -64,8 +67,8 @@ var CodeFixer = &aflow.LLMTool[CodeFixerArgs]{
 	Judge: &aflow.LLMJudge{
 		Name:               "code-fixer-judge",
 		Model:              aflow.Temporary35FlashOnlyModel,
-		MinIterations:      30,
-		EvaluationInterval: 10,
+		MinIterations:      50,
+		EvaluationInterval: 20,
 		Instruction: "You are a Judge Agent monitoring the execution of a subagent debugging a syzlang program.\n" +
 			"Your job is to look at the history of attempts and decide if the subagent is stuck " +
 			"in a loop, oscillating between different errors without progress, or otherwise runaway.\n\n" +
