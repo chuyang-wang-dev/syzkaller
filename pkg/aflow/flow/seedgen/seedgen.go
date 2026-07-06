@@ -17,7 +17,6 @@ import (
 	"github.com/google/syzkaller/pkg/aflow/ai"
 	aflow_syzlang "github.com/google/syzkaller/pkg/aflow/syzspec"
 	"github.com/google/syzkaller/pkg/aflow/tool/codesearcher"
-	"github.com/google/syzkaller/pkg/aflow/tool/syzlang"
 )
 
 type SeedGenInputs struct {
@@ -61,8 +60,8 @@ func init() {
 						&aflow.If{
 							Condition: "LastFailedExecutionCachedID",
 							Do: aflow.Pipeline(
-								syzlang.ActionPrepareSummarizer,
-								syzlang.SummarizerAgent,
+								ActionPrepareFailedDetails,
+								HistorySummarizerAgent,
 							),
 						},
 						GeneratorAgent,
@@ -139,7 +138,7 @@ type VerifyPCAndLoopStateResult struct {
 	ContinueLoop                string
 	PCReached                   bool
 	LastFailedExecutionCachedID string
-	LastFailedGeneratedSyz      string
+	LastFailedHistorySummary    string
 }
 
 var ActionVerifyPCAndLoopState = aflow.NewFuncAction("seedgen-verify-pc-and-loop",
@@ -165,9 +164,24 @@ var ActionVerifyPCAndLoopState = aflow.NewFuncAction("seedgen-verify-pc-and-loop
 			PCReached:                   false,
 			LastFailedExecutionCachedID: args.ExecutionCachedID,
 		}
-		generated, err := crash.LoadSeedProgramDetails(ctx, args.ExecutionCachedID)
-		if err == nil {
-			res.LastFailedGeneratedSyz = generated
-		}
 		return res, nil
+	})
+
+type PrepareFailedDetailsArgs struct {
+	LastFailedExecutionCachedID string
+}
+
+type PrepareFailedDetailsResult struct {
+	LastFailedGeneratedSyz string
+}
+
+var ActionPrepareFailedDetails = aflow.NewFuncAction("seedgen-prepare-failed-details",
+	func(ctx *aflow.Context, args PrepareFailedDetailsArgs) (PrepareFailedDetailsResult, error) {
+		if args.LastFailedExecutionCachedID == "" {
+			return PrepareFailedDetailsResult{}, nil
+		}
+		generated, err := crash.LoadSeedProgramDetails(ctx, args.LastFailedExecutionCachedID)
+		return PrepareFailedDetailsResult{
+			LastFailedGeneratedSyz: generated,
+		}, err
 	})

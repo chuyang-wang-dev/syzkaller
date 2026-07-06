@@ -5,17 +5,9 @@ package aflow
 
 import (
 	"reflect"
-	"runtime"
 
 	"github.com/google/syzkaller/pkg/aflow/trajectory"
 )
-
-func init() {
-	// TODO: remove when struct usage is merged.
-	var t *Try
-	runtime.KeepAlive(t.execute)
-	runtime.KeepAlive(t.verify)
-}
 
 // Try represents a "try { Do } catch { Catch }" action.
 // It only catches BadCallError (e.g. judge stopping execution or recoverable LLM errors)
