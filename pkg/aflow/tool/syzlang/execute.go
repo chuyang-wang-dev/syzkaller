@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/syzkaller/pkg/aflow"
 	"github.com/google/syzkaller/pkg/aflow/action/crash"
+	"github.com/google/syzkaller/pkg/aflow/syzlang"
 	"github.com/google/syzkaller/prog"
 	_ "github.com/google/syzkaller/sys"
 	"github.com/google/syzkaller/sys/targets"
@@ -40,10 +41,12 @@ type ExecuteSeedResult struct {
 }
 
 func executeSeed(ctx *aflow.Context, state reproduceState, args ExecuteSeedArgs) (ExecuteSeedResult, error) {
-	fullSyz, baseLines, err := crash.CombineSyzPrograms(args.BaseTestSeed, args.ReproSyz)
-	if err != nil {
-		return ExecuteSeedResult{}, aflow.BadCallError("%v", err)
+	baseSeed := syzlang.BaseTestSeed{Path: args.BaseTestSeed}
+	if err := baseSeed.Load(state.Syzkaller, state.TargetOS); err != nil {
+		return ExecuteSeedResult{}, aflow.BadCallError("failed to read BaseTestSeed: %v", err)
 	}
+
+	fullSyz, baseLines := syzlang.CombineSyzPrograms(baseSeed.Data, args.ReproSyz)
 
 	if fullSyz == "" {
 		return ExecuteSeedResult{}, aflow.BadCallError("syz program cannot be empty")
@@ -91,19 +94,23 @@ func executeSeed(ctx *aflow.Context, state reproduceState, args ExecuteSeedArgs)
 			KernelCommit: state.KernelCommit,
 			KernelConfig: state.KernelConfig,
 		},
-		SeedSyz: fullSyz,
+		BaseSeed:     baseSeed,
+		GeneratedSyz: args.ReproSyz,
 	}
 
-	executionCachedID, err := crash.ExecuteSeedFunc(ctx, executeArgs, args.BaseTestSeed, args.ReproSyz)
+	executionCachedID, err := crash.ExecuteSeedFunc(ctx, executeArgs)
 	if err != nil {
-		return ExecuteSeedResult{}, err
+		if aflow.IsFlowError(err) {
+			return ExecuteSeedResult{}, err
+		}
+		return ExecuteSeedResult{}, aflow.BadCallError("%v", err)
 	}
 
 	callErrors, err := crash.LoadCallErrors(ctx, executionCachedID)
 	if err != nil {
 		return ExecuteSeedResult{}, err
 	}
-	baseCallsCount, err := crash.BaseSeedCallCount(args.BaseTestSeed, state.TargetArch)
+	baseCallsCount, err := syzlang.BaseSeedCallCount([]byte(baseSeed.Data), state.TargetArch)
 	if err != nil {
 		return ExecuteSeedResult{}, aflow.BadCallError("failed to get base test seed calls: %v", err)
 	}

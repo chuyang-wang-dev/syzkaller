@@ -22,7 +22,7 @@ var GeneratorAgent = &aflow.LLMAgent{
 				if outputs.ExecutionCachedID == "" {
 					return outputs, aflow.BadCallError("must provide ExecutionCachedID if not giving up")
 				}
-				_, _, err := crash.LoadProgramDetails(ctx, outputs.ExecutionCachedID)
+				_, _, err := crash.LoadSeedProgramDetails(ctx, outputs.ExecutionCachedID)
 				if err != nil {
 					return outputs, aflow.BadCallError("invalid ExecutionCachedID %q: %v", outputs.ExecutionCachedID, err)
 				}

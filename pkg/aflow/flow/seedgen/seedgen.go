@@ -85,7 +85,7 @@ var ActionFormatOutput = aflow.NewFuncAction("format-output",
 		seedSyz := ""
 		if args.ExecutionCachedID != "" {
 			var err error
-			baseSeed, generated, err := crash.LoadProgramDetails(ctx, args.ExecutionCachedID)
+			baseSeed, generated, err := crash.LoadSeedProgramDetails(ctx, args.ExecutionCachedID)
 			if err != nil {
 				return ai.SeedGenOutputs{}, aflow.BadCallError("failed to read program from cache: %v", err)
 			}
@@ -168,7 +168,7 @@ var ActionVerifyPCAndLoopState = aflow.NewFuncAction("seedgen-verify-pc-and-loop
 			PCReached:                   false,
 			LastFailedExecutionCachedID: args.ExecutionCachedID,
 		}
-		baseSeed, generated, err := crash.LoadProgramDetails(ctx, args.ExecutionCachedID)
+		baseSeed, generated, err := crash.LoadSeedProgramDetails(ctx, args.ExecutionCachedID)
 		if err == nil {
 			res.LastFailedBaseTestSeed = baseSeed
 			res.LastFailedGeneratedSyz = generated

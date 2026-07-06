@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/syzkaller/pkg/aflow"
 	"github.com/google/syzkaller/pkg/aflow/action/crash"
+	"github.com/google/syzkaller/pkg/aflow/syzlang"
 	"github.com/google/syzkaller/pkg/aflow/tool/codesearcher"
 )
 
@@ -39,13 +40,13 @@ var ActionPrepareSummarizer = aflow.NewFuncAction("prepare-summarizer",
 			return SummarizerContext{}, err
 		}
 
-		baseSeed, generated, err := crash.LoadProgramDetails(ctx, args.LastFailedExecutionCachedID)
+		baseSeedPath, generated, err := crash.LoadSeedProgramDetails(ctx, args.LastFailedExecutionCachedID)
 		if err != nil {
 			return SummarizerContext{}, fmt.Errorf("failed to load program for ExecutionCachedID: %w", err)
 		}
 		syzProgram := generated
-		if baseSeed != "" {
-			syzProgram = "// Base Test Seed: " + baseSeed + "\n" + generated
+		if baseSeedPath != "" {
+			syzProgram = "// Base Test Seed: " + baseSeedPath + "\n" + generated
 		}
 
 		targetFile := args.File
@@ -54,7 +55,12 @@ var ActionPrepareSummarizer = aflow.NewFuncAction("prepare-summarizer",
 			targetPC = fmt.Sprintf("0x%x", args.PC)
 		}
 
-		baseCallsCount, err := crash.BaseSeedCallCount(baseSeed, state.TargetArch)
+		baseSeed := syzlang.BaseTestSeed{Path: baseSeedPath}
+		if err := baseSeed.Load(state.Syzkaller, state.TargetOS); err != nil {
+			return SummarizerContext{}, fmt.Errorf("failed to load base test seed: %w", err)
+		}
+
+		baseCallsCount, err := syzlang.BaseSeedCallCount([]byte(baseSeed.Data), state.TargetArch)
 		if err != nil {
 			return SummarizerContext{}, fmt.Errorf("failed to get base test seed calls: %w", err)
 		}

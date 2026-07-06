@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/syzkaller/pkg/aflow"
 	"github.com/google/syzkaller/pkg/aflow/action/crash"
+	"github.com/google/syzkaller/pkg/aflow/syzlang"
 	"github.com/google/syzkaller/pkg/symbolizer"
 )
 
@@ -269,12 +270,17 @@ func getExecutionTrace(
 		return ExecutionTraceResult{}, aflow.BadCallError("failed to read coverage: %v", err)
 	}
 
-	baseSeed, _, err := crash.LoadProgramDetails(ctx, args.ExecutionCachedID)
+	baseSeedPath, _, err := crash.LoadSeedProgramDetails(ctx, args.ExecutionCachedID)
 	if err != nil {
 		return ExecutionTraceResult{}, aflow.BadCallError("failed to load program details: %v", err)
 	}
 
-	baseCallsCount, err := crash.BaseSeedCallCount(baseSeed, state.TargetArch)
+	baseSeed := syzlang.BaseTestSeed{Path: baseSeedPath}
+	if err := baseSeed.Load(state.Syzkaller, state.TargetOS); err != nil {
+		return ExecutionTraceResult{}, err
+	}
+
+	baseCallsCount, err := syzlang.BaseSeedCallCount([]byte(baseSeed.Data), state.TargetArch)
 	if err != nil {
 		return ExecutionTraceResult{}, aflow.BadCallError("failed to get base test seed calls: %v", err)
 	}

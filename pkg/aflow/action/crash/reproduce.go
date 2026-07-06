@@ -252,13 +252,30 @@ func LoadCoverage(ctx *aflow.Context, cachedID string) ([][]symbolizer.Frame, er
 	return cached.Coverage, nil
 }
 
-func LoadProgramDetails(ctx *aflow.Context, cachedID string) (
+func LoadSeedProgramDetails(ctx *aflow.Context, cachedID string) (
 	baseTestSeed, generatedSyz string, err error) {
 	cached, err := aflow.RetrieveObject[cachedExecution](ctx, cachedID)
 	if err != nil {
 		return "", "", err
 	}
 	return cached.BaseTestSeed, cached.GeneratedSyz, nil
+}
+
+func CheckPCInCoverage(ctx *aflow.Context, executionCachedID string, targetPC uint64) (bool, error) {
+	coverage, err := LoadCoverage(ctx, executionCachedID)
+	if err != nil {
+		return false, err
+	}
+
+	for _, callcov := range coverage {
+		for _, frame := range callcov {
+			if frame.PC == targetPC {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
 }
 
 func LoadCallErrors(ctx *aflow.Context, cachedID string) ([]int32, error) {
