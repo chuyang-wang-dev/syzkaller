@@ -1,3 +1,6 @@
+// Copyright 2026 syzkaller project authors. All rights reserved.
+// Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
+
 package seedgen
 
 import (
@@ -32,11 +35,24 @@ var GeneratorAgent = &aflow.LLMAgent{
 	Tools: aflow.Tools(
 		&SeedgenAnalyzer,
 		syzlang.CodeFixer,
+		syzlang.ExecutionSummarizer,
+		CheckPCReached,
 		syzlang.ReadSyzSpec,
 		syzlang.SyzGrepper,
 		codesearcher.Tools,
 	),
-	TaskType: aflow.FormalReasoningTask,
+	TaskType:      aflow.FormalReasoningTask,
+	MaxIterations: 1000,
+	Judge: &aflow.LLMJudge{
+		Name:               "generator-judge",
+		Model:              aflow.Temporary35FlashOnlyModel,
+		MinIterations:      300,
+		EvaluationInterval: 30,
+		Instruction: "You are a Judge Agent monitoring the Generator Agent.\n" +
+			"The Generator is trying to reach a target PC by generating and testing programs in a loop.\n" +
+			"Decide if the Generator is stuck, oscillating, or making no progress.\n" +
+			"Set Stop = true if it has made more than 3 attempts (code-fixer calls) without getting closer to the target PC.",
+	},
 	Instruction: `You are the Generator orchestrating the generation of a syzkaller seed.
 Your goal is to reach a specific target PC.
 
@@ -77,14 +93,18 @@ with ` + "`" + `long syz_*` + "`" + ` in the executor header files (under execut
 Using these pseudo syscalls in your syzlang program can be much more convenient than using the raw syscalls.
 
 Workflow:
-1. Read the Target details, previous attempts, and the failure summary from the prompt.
-2. If you need more information about the kernel state or functions, call 'seedgen-analyzer'.
-3. Formulate a new syzlang program to reach the PC and call 'code-fixer' to debug it.
-4. (CRITICAL INSTRUCTION) Once 'code-fixer' successfully returns an ExecutionCachedID,
-you MUST immediately call 'set-results' with it.
-Do NOT make any further tool calls or try to optimize the program in the same turn.
-The pipeline will verify coverage externally and restart the loop if it failed.
-5. If you decide to give up entirely, call 'set-results' with GeneratorGiveUp=true and a reason.`,
+1. Read the Target details, previous attempts, and any Judge failure summaries from the prompt.
+2. Loop internally to find a program that reaches the target PC:
+   a. Formulate a syzlang program.
+   b. Call 'code-fixer' to debug and execute it, obtaining an ExecutionCachedID.
+   c. Call 'check-pc-reached' with the ExecutionCachedID to verify if the target PC was reached.
+   d. If reached is true:
+      - Success! Call 'set-results' with this ExecutionCachedID and end your execution.
+   e. If reached is false:
+      - Call 'execution-summarizer' with the ExecutionCachedID to get a detailed failure summary.
+      - Use the failure summary details to formulate a new (improved) program, and repeat from step (a).
+3. If you decide to give up entirely (e.g., after multiple attempts or if target is unreachable),
+   call 'set-results' with GeneratorGiveUp=true and a reason.`,
 	Prompt: `Target File: {{.File}}
 Target Line: {{.Line}}
 Target Function: {{.FunctionName}}
@@ -119,15 +139,16 @@ Generated Syz:
 ---
 {{end}}
 
-{{if .LastFailureSummary}}
+{{if .LastFailedHistorySummary}}
 ---
-Failure Summary of Last Attempt:
-{{.LastFailureSummary}}
+Warning: The previous attempt got stuck and was terminated by the Judge. 
+Summary of the failure:
+{{.LastFailedHistorySummary}}
+Use this info to avoid repeating the same loops or strategies.
 ---
 {{end}}
 
-Formulate a plausible syzlang program quickly based on the context. \
-Use 'code-fixer' to execute and debug it. Once code-fixer returns the \
-ExecutionCachedID, you MUST immediately call set-results with it to yield \
-control back to the pipeline without calling any other tools.`,
+Formulate a plausible syzlang program to reach the target PC.
+Use 'code-fixer', 'check-pc-reached', and 'execution-summarizer' to \
+iterate internally until you reach the target PC or decide to give up.`,
 }
