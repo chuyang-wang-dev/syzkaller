@@ -71,6 +71,8 @@ type agentSession struct {
 	toolHistory []toolCallRecord
 	// req stores the active conversation history slice in this execution.
 	req []llmMessage
+	// fullReq stores the complete, uncompressed conversation history.
+	fullReq []llmMessage
 	// outputs stores the results returned by the final set-results tool call, if any.
 	outputs map[string]any
 	// answerNow is set to true when the input overflows and the agent must
@@ -339,8 +341,10 @@ func (a *agentSession) tryAnswerNow(cfg *backend.GenerateConfig, overflow bool) 
 	}}
 	if overflow {
 		a.req[len(a.req)-1] = request
+		a.fullReq[len(a.fullReq)-1] = request
 	} else {
 		a.req = append(a.req, request)
+		a.fullReq = append(a.fullReq, request)
 	}
 	return true
 }
@@ -359,6 +363,7 @@ func (a *agentSession) chat(ctx *Context, cfg *backend.GenerateConfig, tools map
 			Parts: []backend.Part{{Text: prompt}},
 		}}}
 	}
+	a.fullReq = append([]llmMessage(nil), a.req...)
 	var anchorTokens int
 	for iter := 0; iter < a.maxIterations || a.tryAnswerNow(cfg, false); iter++ {
 		var currentInputTokens int
@@ -421,10 +426,12 @@ func (a *agentSession) chat(ctx *Context, cfg *backend.GenerateConfig, tools map
 		if reply == "" && len(calls) == 0 {
 			resp.Parts = []backend.Part{{Text: "empty"}}
 		}
-		a.req = append(a.req, llmMessage{
+		msg := llmMessage{
 			content:    &backend.Message{Role: backend.RoleModel, Parts: resp.Parts},
 			tokenCount: span.OutputTokens,
-		})
+		}
+		a.req = append(a.req, msg)
+		a.fullReq = append(a.fullReq, msg)
 
 		if len(calls) == 0 {
 			reply, outputs, ok, err := a.handleFinalReply(ctx, reply)
@@ -478,10 +485,12 @@ func (a *agentSession) handleFinalReply(ctx *Context, reply string) (string, map
 		return "", nil, false, err
 	}
 	if wrong != "" {
-		a.req = append(a.req, llmMessage{content: &backend.Message{
+		msg := llmMessage{content: &backend.Message{
 			Role:  backend.RoleUser,
 			Parts: []backend.Part{{Text: wrong}},
-		}})
+		}}
+		a.req = append(a.req, msg)
+		a.fullReq = append(a.fullReq, msg)
 		return "", nil, true, nil
 	}
 	return reply, a.outputs, false, nil
@@ -494,14 +503,23 @@ func (a *agentSession) evaluateJudge(ctx *Context, iter int) error {
 	if iter < a.Judge.MinIterations || (iter-a.Judge.MinIterations)%a.Judge.EvaluationInterval != 0 {
 		return nil
 	}
-	decision, err := a.Judge.Evaluate(ctx, a.req)
+	decision, err := a.Judge.Evaluate(ctx, a.fullReq)
 	if err != nil {
 		return fmt.Errorf("judge agent failed: %w", err)
 	}
 	if decision.Stop {
+		ctx.state[a.Name+"_FailedHistory"] = extractHistoryMessages(a.fullReq)
 		return BadCallError("judge agent stopped execution: %s", decision.Reason)
 	}
 	return nil
+}
+
+func extractHistoryMessages(history []llmMessage) []*backend.Message {
+	var messages []*backend.Message
+	for _, msg := range history {
+		messages = append(messages, msg.content)
+	}
+	return messages
 }
 
 func (a *agentSession) checkFinalReply(ctx *Context, reply string) (string, string, error) {
@@ -793,7 +811,9 @@ func (a *agentSession) callTools(ctx *Context, tools map[string]Tool, calls []*b
 			a.outputs = span.Results
 		}
 	}
-	a.req = append(a.req, llmMessage{content: responses})
+	msg := llmMessage{content: responses}
+	a.req = append(a.req, msg)
+	a.fullReq = append(a.fullReq, msg)
 	return nil
 }
 
