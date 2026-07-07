@@ -19,3 +19,8 @@ read-file source0.c 55 50
   71:		struct ops o;
   72:		o.do_work = my_work;
   73:	}
+  74:	
+  75:	void function_with_block_include()
+  76:	{
+  77:	#include "block_include.h"
+  78:	}

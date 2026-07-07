@@ -71,3 +71,8 @@ void register_ops()
 	struct ops o;
 	o.do_work = my_work;
 }
+
+void function_with_block_include()
+{
+#include "block_include.h"
+}

@@ -6,6 +6,7 @@ function call_work
 function close
 function field_refs
 function func_accepting_a_struct
+function function_with_block_include
 function function_with_comment_in_header
 function function_with_quotes_in_type
 function my_work

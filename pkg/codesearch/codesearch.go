@@ -373,23 +373,33 @@ func (index *Index) FindReferences(contextFile, name, srcPrefix string, contextL
 
 func (index *Index) formatReferenceInfo(def *Definition, ref Reference, contextLines int) (ReferenceInfo, error) {
 	snippet := ""
+	refFile := ref.File
+	if refFile == "" {
+		refFile = def.Body.File
+	}
 	if contextLines > 0 {
 		lines := LineRange{
-			File:      def.Body.File,
-			StartLine: max(def.Body.StartLine, uint32(max(0, int(ref.Line)-contextLines))),
-			EndLine:   min(def.Body.EndLine, ref.Line+uint32(contextLines)),
+			File:      refFile,
+			StartLine: uint32(max(1, int(ref.Line)-contextLines)),
+			EndLine:   ref.Line + uint32(contextLines),
 		}
-		var err error
-		snippet, err = index.formatSource(lines)
-		if err != nil {
-			return ReferenceInfo{}, err
+		if refFile == def.Body.File {
+			lines.StartLine = max(def.Body.StartLine, lines.StartLine)
+			lines.EndLine = min(def.Body.EndLine, lines.EndLine)
+		}
+		if lines.StartLine <= lines.EndLine {
+			var err error
+			snippet, err = index.formatSource(lines)
+			if err != nil {
+				return ReferenceInfo{}, err
+			}
 		}
 	}
 	return ReferenceInfo{
 		ReferencingEntityKind: def.Kind.String(),
 		ReferencingEntityName: def.Name,
 		ReferenceKind:         ref.Kind.String(),
-		SourceFile:            def.Body.File,
+		SourceFile:            refFile,
 		SourceLine:            int(ref.Line),
 		SourceSnippet:         snippet,
 	}, nil
@@ -496,6 +506,9 @@ func (index *Index) formatSource(lines LineRange) (string, error) {
 	if lines.File == "" {
 		return "", nil
 	}
+	if err := escaping(lines.File); err != nil {
+		return "", err
+	}
 	for _, dir := range index.srcDirs {
 		file := filepath.Join(dir, lines.File)
 		if !osutil.IsExist(file) {
@@ -514,10 +527,17 @@ func formatSourceFile(file string, start, end int) (string, error) {
 	lines := bytes.Split(data, []byte{'\n'})
 	start--
 	end--
-	if start < 0 || end < start || end >= len(lines) {
+	if start < 0 || end < start {
 		return "", fmt.Errorf("codesearch: bad line range [%v-%v] for file %v with %v lines",
 			start+1, end+1, file, len(lines))
 	}
+	if start >= len(lines) {
+		return "", nil
+	}
+	if end >= len(lines) {
+		end = len(lines) - 1
+	}
+
 	b := new(strings.Builder)
 	for line := start; line <= end; line++ {
 		fmt.Fprintf(b, "%4v:\t%s\n", line+1, lines[line])
