@@ -141,7 +141,7 @@ func extractCoverage(info *flatrpc.ProgInfo, cfg *mgrconfig.Config) ([][]symboli
 			KernelObj:  cfg.KernelObj,
 			KernelSrc:  cfg.KernelSrc,
 		}
-		symbolized, err := symbolize(args, cov)
+		symbolized, err := SymbolizeCoverage(args, cov)
 		if err != nil {
 			return nil, fmt.Errorf("failed to symbolize coverage: %w", err)
 		}
