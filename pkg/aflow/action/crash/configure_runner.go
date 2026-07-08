@@ -22,6 +22,7 @@ type ConfigureRunnerArgs struct {
 	VM         json.RawMessage
 	KernelSrc  string
 	KernelObj  string
+	Snapshot   bool
 }
 
 func configureRunnerAction(ctx *aflow.Context, args ConfigureRunnerArgs) (struct{}, error) {
@@ -31,20 +32,23 @@ func configureRunnerAction(ctx *aflow.Context, args ConfigureRunnerArgs) (struct
 	}
 
 	reproArgs := ReproduceArgs{
-		TargetArch: args.TargetArch,
-		Syzkaller:  args.Syzkaller,
-		Image:      args.Image,
-		Type:       args.Type,
-		VM:         args.VM,
-		KernelSrc:  args.KernelSrc,
-		KernelObj:  args.KernelObj,
+		TargetConfig: TargetConfig{
+			TargetArch: args.TargetArch,
+			Syzkaller:  args.Syzkaller,
+			Image:      args.Image,
+			Type:       args.Type,
+			VM:         args.VM,
+			KernelSrc:  args.KernelSrc,
+			KernelObj:  args.KernelObj,
+			Snapshot:   args.Snapshot,
+		},
 	}
 
 	if err := reproArgs.Validate(); err != nil {
 		return struct{}{}, aflow.FlowError(err)
 	}
 
-	cfg, err := buildConfig(reproArgs, workdir)
+	cfg, err := buildConfig(reproArgs.TargetConfig, workdir)
 	if err != nil {
 		return struct{}{}, fmt.Errorf("failed to build config for runner: %w", err)
 	}

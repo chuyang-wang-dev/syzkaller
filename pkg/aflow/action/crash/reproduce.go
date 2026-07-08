@@ -28,6 +28,8 @@ import (
 
 var ErrDidNotCrash = errors.New("reproducer did not crash")
 
+const vmQemu = "qemu"
+
 // Reproduce action tries to reproduce a crash with the given reproducer,
 // and outputs the resulting crash report.
 // If the reproducer does not trigger a crash, action fails.
@@ -47,6 +49,7 @@ type TargetConfig struct {
 	StraceBin    string
 	NeedStrace   bool
 	Procs        int
+	Snapshot     bool
 }
 
 type ReproduceArgs struct {
@@ -67,7 +70,7 @@ func (args *TargetConfig) Validate() error {
 	if targets.Get(targets.Linux, args.TargetArch) == nil {
 		return fmt.Errorf("unsupported target: %v/%v", targets.Linux, args.TargetArch)
 	}
-	if args.Type != "qemu" && args.Type != "gce" {
+	if args.Type != vmQemu && args.Type != "gce" {
 		return fmt.Errorf("unsupported VM type %q", args.Type)
 	}
 	return nil
@@ -279,7 +282,7 @@ func buildConfig(args TargetConfig, workdir string) (*mgrconfig.Config, error) {
 	image := args.Image
 
 	switch args.Type {
-	case "qemu":
+	case vmQemu:
 		vmConfig["kernel"] = filepath.Join(args.KernelObj, filepath.FromSlash(build.LinuxKernelImage(targetArch)))
 	case "gce":
 		params := build.Params{
@@ -315,6 +318,10 @@ func buildConfig(args TargetConfig, workdir string) (*mgrconfig.Config, error) {
 	} else {
 		cfg.Procs = 1
 	}
+	if args.Snapshot && args.Type != vmQemu {
+		return nil, fmt.Errorf("snapshot mode is only supported with qemu VM type")
+	}
+	cfg.Snapshot = args.Snapshot
 	cfg.Experimental.DescriptionsMode = mgrconfig.AnyDescriptionsMode
 	if args.NeedStrace && args.StraceBin != "" {
 		cfg.StraceBin = args.StraceBin
