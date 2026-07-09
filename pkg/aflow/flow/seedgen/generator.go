@@ -108,7 +108,24 @@ Workflow:
       - Call 'execution-summarizer' with the ExecutionCachedID to get a detailed failure summary.
       - Use the failure summary details to formulate a new (improved) program, and repeat from step (a).
 3. If you decide to give up entirely (e.g., after multiple attempts or if target is unreachable),
-   call 'set-results' with GeneratorGiveUp=true and a reason.`,
+   call 'set-results' with GeneratorGiveUp=true and a reason.
+
+CRITICAL SYZLANG CONSTRAINTS:
+- Program Structure: Syzlang programs must contain ONLY system call invocations and variable assignments. ` +
+		`Assume all types, structs, and resources are already defined. ` +
+		`Never define custom types, structs, or resources inline.
+- String Literals: Use single quotes for text, filenames, and device paths. ` +
+		`Null-terminate C-strings with \x00 (e.g., '/dev/kvm\x00').
+- Escaping: The only valid escape sequences inside strings are \x (hex) and \\ (backslash). ` +
+		`Escaping forward slashes (\/) or dots (\.) causes syntax errors.
+- Byte Payloads: Use double quotes ("...") EXCLUSIVELY for raw hexadecimal sequences.
+- Finding Resources: Search for the resource identifier itself (e.g., fd_camx). ` +
+		`The ` + "`resource`" + ` keyword is used exactly once at declaration and should not be included in search queries.
+- Resource Producers: Valid producers use the resource as a syscall return type, ` +
+		`or within a struct field marked (out) or ptr[out, ...]. ` +
+		`Struct fields marked opt or inside unions cannot be producers.
+- Resource Consumers: Valid consumers use the resource as an input argument to a syscall ` +
+		`or inside a struct field marked (in).`,
 	Prompt: `Target File: {{.File}}
 Target Line: {{.Line}}
 Target Function: {{.FunctionName}}

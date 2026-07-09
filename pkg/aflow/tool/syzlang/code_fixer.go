@@ -51,7 +51,14 @@ var CodeFixer = &aflow.LLMTool[struct{}, CodeFixerArgs]{
 		"Do NOT use array syntax for buffers.\n" +
 		"- Struct Fields: Structs MUST contain the exact number of fields specified in their definition. " +
 		"Use `AUTO` if you want to omit fields or let the fuzzer fill them.\n" +
-		"- String Formats: String arguments must be explicitly escaped or properly formatted according to the type.\n\n" +
+		"- Program Structure: Syzlang programs must contain ONLY system call invocations and variable assignments. " +
+		"Assume all types, structs, and resources are already defined. " +
+		"Never define custom types, structs, or resources inline.\n" +
+		"- String Literals: Use single quotes for text, filenames, and device paths. " +
+		"Null-terminate C-strings with \\x00 (e.g., '/dev/kvm\\x00').\n" +
+		"- Escaping: The only valid escape sequences inside strings are \\x (hex) and \\\\ (backslash). " +
+		"Escaping forward slashes (\\/) or dots (\\.) causes syntax errors.\n" +
+		"- Byte Payloads: Use double quotes (\"...\") EXCLUSIVELY for raw hexadecimal sequences.\n\n" +
 		"===\n{{.DocProgramSyntax}}\n===\n\n" +
 		"Document about syzlang system call descriptions syntax:\n" +
 		"===\n{{.DocSyscallDescriptionsSyntax}}\n===\n\n" +
