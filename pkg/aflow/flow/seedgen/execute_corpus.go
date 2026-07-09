@@ -4,13 +4,16 @@
 package seedgen
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 
 	"github.com/google/syzkaller/pkg/aflow"
+	"github.com/google/syzkaller/pkg/aflow/action/crash"
 	"github.com/google/syzkaller/pkg/cover/backend"
 	"github.com/google/syzkaller/pkg/db"
 	"github.com/google/syzkaller/pkg/fuzzer/queue"
@@ -28,6 +31,7 @@ type ExecuteCorpusArgs struct {
 	Syzkaller    string
 	Image        string
 	Type         string
+	VM           json.RawMessage
 	KernelSrc    string
 	KernelObj    string
 	KernelCommit string
@@ -75,12 +79,46 @@ func executeCorpusAction(ctx *aflow.Context, args ExecuteCorpusArgs) (ExecuteCor
 			return corpusData{}, fmt.Errorf("corpus is empty")
 		}
 
-		rm, err := ctx.GetRunnerManager(nil)
-		if err != nil {
-			return corpusData{}, fmt.Errorf("failed to get RunnerManager: %w", err)
+		corpusVMCount := max(1, int(float64(runtime.NumCPU())/2.5))
+
+		var vmConfig map[string]any
+		if err := json.Unmarshal(args.VM, &vmConfig); err == nil {
+			vmConfig["count"] = corpusVMCount
+			if b, err := json.Marshal(vmConfig); err == nil {
+				args.VM = b
+			}
 		}
 
-		results, err := rm.SubmitBatch(ctx.Context, progs)
+		targetConfig := crash.TargetConfig{
+			AgentName:    "corpus-executor",
+			TargetArch:   args.TargetArch,
+			Syzkaller:    args.Syzkaller,
+			Image:        args.Image,
+			Type:         args.Type,
+			VM:           args.VM,
+			KernelSrc:    args.KernelSrc,
+			KernelObj:    args.KernelObj,
+			KernelCommit: args.KernelCommit,
+			Snapshot:     false,
+			Sandbox:      "namespace",
+		}
+
+		workdir, err := ctx.TempDir()
+		if err != nil {
+			return corpusData{}, fmt.Errorf("failed to create workdir: %w", err)
+		}
+
+		cfg, err := crash.BuildConfig(targetConfig, workdir)
+		if err != nil {
+			return corpusData{}, fmt.Errorf("failed to build config: %w", err)
+		}
+
+		var results []*queue.Result
+		err = aflow.RunIsolatedManager(ctx.Context, cfg, false, func(rm *aflow.RunnerManager) error {
+			var err error
+			results, err = rm.SubmitBatch(ctx.Context, progs)
+			return err
+		})
 		if err != nil {
 			return corpusData{}, fmt.Errorf("failed to submit corpus for execution: %w", err)
 		}
