@@ -68,7 +68,7 @@ func ExecuteSeedFunc(ctx *aflow.Context, args ExecuteSeedArgs) (string, error) {
 			return res, err
 		}
 
-		cfg, err := buildConfig(args.TargetConfig, workdir)
+		cfg, err := BuildConfig(args.TargetConfig, workdir)
 		if err != nil {
 			return res, err
 		}

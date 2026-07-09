@@ -95,6 +95,7 @@ func init() {
 				"NeedStrace": false,
 				"Procs":      1,
 				"Snapshot":   false,
+				"Sandbox":    "",
 			},
 			Root: aflow.Pipeline(
 				// Setup base kernel for code tools.

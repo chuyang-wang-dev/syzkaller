@@ -6,7 +6,6 @@ package crash
 
 import (
 	"cmp"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -15,7 +14,6 @@ import (
 	"slices"
 
 	"github.com/google/syzkaller/pkg/aflow"
-	"github.com/google/syzkaller/pkg/build"
 	"github.com/google/syzkaller/pkg/cover/backend"
 	"github.com/google/syzkaller/pkg/csource"
 	"github.com/google/syzkaller/pkg/hash"
@@ -35,23 +33,6 @@ const vmQemu = "qemu"
 // If the reproducer does not trigger a crash, action fails.
 var Reproduce = aflow.NewFuncAction("crash-reproducer", ReproduceFunc)
 
-type TargetConfig struct {
-	AgentName    string
-	TargetArch   string
-	Syzkaller    string
-	Image        string
-	Type         string
-	VM           json.RawMessage
-	KernelSrc    string
-	KernelObj    string
-	KernelCommit string
-	KernelConfig string
-	StraceBin    string
-	NeedStrace   bool
-	Procs        int
-	Snapshot     bool
-}
-
 type ReproduceArgs struct {
 	TargetConfig
 	ReproOpts string
@@ -66,7 +47,9 @@ type reproduceResult struct {
 	ReproducedFaultInjection string
 }
 
-func (args *TargetConfig) Validate() error {
+// Validate checks args using aflow.TargetConfig directly if needed,
+// but for reproduce, we just validate the Type.
+func validateConfig(args *TargetConfig) error {
 	if targets.Get(targets.Linux, args.TargetArch) == nil {
 		return fmt.Errorf("unsupported target: %v/%v", targets.Linux, args.TargetArch)
 	}
@@ -96,14 +79,14 @@ type RunTestResult struct {
 // RunTest boots the kernel and runs a single test program.
 func RunTest(args ReproduceArgs, workdir string, collectCoverage bool) (RunTestResult, error) {
 	res := RunTestResult{}
-	if err := args.Validate(); err != nil {
+	if err := validateConfig(&args.TargetConfig); err != nil {
 		return res, fmt.Errorf("run test: %w", err)
 	}
 	if collectCoverage && args.ReproSyz == "" {
 		return res, errors.New("run test: coverage collection requires a syzkaller program")
 	}
 
-	cfg, err := buildConfig(args.TargetConfig, workdir)
+	cfg, err := BuildConfig(args.TargetConfig, workdir)
 	if err != nil {
 		return res, err
 	}
@@ -272,74 +255,9 @@ func LoadCallErrors(ctx *aflow.Context, cachedID string) ([]int32, error) {
 	return cached.CallErrors, nil
 }
 
-func buildConfig(args TargetConfig, workdir string) (*mgrconfig.Config, error) {
-	var vmConfig map[string]any
-	if err := json.Unmarshal(args.VM, &vmConfig); err != nil {
-		return nil, fmt.Errorf("failed to parse VM config: %w", err)
-	}
-
-	targetArch := args.TargetArch
-	image := args.Image
-
-	switch args.Type {
-	case vmQemu:
-		vmConfig["kernel"] = filepath.Join(args.KernelObj, filepath.FromSlash(build.LinuxKernelImage(targetArch)))
-	case "gce":
-		params := build.Params{
-			TargetOS:     targets.Linux,
-			TargetArch:   targetArch,
-			UserspaceDir: image,
-			OutputDir:    workdir,
-		}
-		kernelPath := filepath.Join(args.KernelObj, filepath.FromSlash(build.LinuxKernelImage(targetArch)))
-		if err := build.EmbedLinuxKernel(params, kernelPath); err != nil {
-			return nil, fmt.Errorf("failed to embed kernel into image: %w", err)
-		}
-		image = filepath.Join(workdir, "image")
-	}
-
-	vmCfg, err := json.Marshal(vmConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize VM config: %w", err)
-	}
-
-	cfg := mgrconfig.DefaultValues()
-	cfg.Name = args.AgentName
-	cfg.RawTarget = targets.Linux + "/" + targetArch
-	cfg.Workdir = workdir
-	cfg.Syzkaller = args.Syzkaller
-	cfg.KernelObj = args.KernelObj
-	cfg.KernelSrc = args.KernelSrc
-	cfg.Image = image
-	cfg.Type = args.Type
-	cfg.VM = vmCfg
-	if args.Procs > 0 {
-		cfg.Procs = args.Procs
-	} else {
-		cfg.Procs = 1
-	}
-	if args.Snapshot && args.Type != vmQemu {
-		return nil, fmt.Errorf("snapshot mode is only supported with qemu VM type")
-	}
-	cfg.Snapshot = args.Snapshot
-	cfg.Experimental.DescriptionsMode = mgrconfig.AnyDescriptionsMode
-	if args.NeedStrace && args.StraceBin != "" {
-		cfg.StraceBin = args.StraceBin
-		cfg.StraceBinOnTarget = false
-	}
-
-	if err := mgrconfig.SetTargets(cfg); err != nil {
-		return nil, err
-	}
-	if err := mgrconfig.Complete(cfg); err != nil {
-		return nil, err
-	}
-	return cfg, nil
-}
-
 func ReproduceFuncWithCoverage(ctx *aflow.Context, args ReproduceArgs,
 	collectCoverage bool) (reproduceResult, string, error) {
-	if err := args.Validate(); err != nil {
+	if err := validateConfig(&args.TargetConfig); err != nil {
 		return reproduceResult{}, "", err
 	}
 

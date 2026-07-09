@@ -58,6 +58,7 @@ func init() {
 				"NeedStrace": false,
 				"Procs":      1,
 				"Snapshot":   false,
+				"Sandbox":    "",
 				// For convenience of the patch-iteration workflow.
 				"ReviewedBy": []string{},
 				"AckedBy":    []string{},

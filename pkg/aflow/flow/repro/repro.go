@@ -50,6 +50,7 @@ func init() {
 				"NeedStrace":                   false,
 				"Procs":                        1,
 				"Snapshot":                     false,
+				"Sandbox":                      "",
 			},
 			Root: aflow.Pipeline(
 				kernel.Checkout,
