@@ -1,10 +1,15 @@
 package syzlang
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 
 	"github.com/google/syzkaller/pkg/aflow"
+	"github.com/google/syzkaller/pkg/aflow/action/crash"
+	"github.com/hexops/gotextdiff"
+	"github.com/hexops/gotextdiff/myers"
+	"github.com/hexops/gotextdiff/span"
 )
 
 type CodeFixerArgs struct {
@@ -17,6 +22,7 @@ type CodeFixerResult struct {
 	ExecutionCachedID string `jsonschema:"Cached execution ID of the successful run."`
 	Program           string `jsonschema:"Leave this empty. It will be replaced automatically."`
 	BaseTestSeed      string `jsonschema:"Leave this empty. It will be replaced automatically."`
+	ProgramDiff       string `jsonschema:"Leave this empty. It will be replaced automatically."`
 }
 
 var CodeFixer = &aflow.StructuredLLMTool[struct{}, CodeFixerArgs, CodeFixerResult]{
@@ -35,6 +41,7 @@ var CodeFixer = &aflow.StructuredLLMTool[struct{}, CodeFixerArgs, CodeFixerResul
 				"You must return the ExecutionCachedID of a successful run.", res.ExecutionCachedID, err)
 		}
 		res.Program = finalProg
+		res.ProgramDiff = diffPrograms(args.SyzProgram, finalProg)
 		if res.BaseTestSeed == "" {
 			res.BaseTestSeed = args.BaseTestSeed
 		}
@@ -142,4 +149,9 @@ var CodeFixer = &aflow.StructuredLLMTool[struct{}, CodeFixerArgs, CodeFixerResul
 
 {{end}}Generator's Syzlang Program:
 {{.SyzProgram}}`,
+}
+
+func diffPrograms(original, fixed string) string {
+	edits := myers.ComputeEdits(span.URIFromPath("original"), original, fixed)
+	return fmt.Sprint(gotextdiff.ToUnified("original", "fixed", original, edits))
 }
