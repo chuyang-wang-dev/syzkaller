@@ -47,12 +47,12 @@ var GeneratorAgent = &aflow.LLMAgent{
 	Judge: &aflow.LLMJudge{
 		Name:               "generator-judge",
 		Model:              aflow.Temporary35FlashOnlyModel,
-		MinIterations:      300,
+		MinIterations:      100,
 		EvaluationInterval: 30,
-		Instruction: "You are a Judge Agent monitoring the Generator Agent.\n" +
-			"The Generator is trying to reach a target PC by generating and testing programs in a loop.\n" +
-			"Decide if the Generator is stuck, oscillating, or making no progress.\n" +
-			"Set Stop = true if it has made more than 3 attempts (code-fixer calls) without getting closer to the target PC.",
+		Instruction: `You are a Judge Agent monitoring the Generator Agent.
+The Generator is trying to reach a target PC by generating and testing programs in a loop.
+Decide if the Generator is stuck, oscillating, or making no progress.
+Set Stop = true if it has made more than 3 attempts (code-fixer calls) without getting closer to the target PC.`,
 	},
 	Instruction: `You are the Generator orchestrating the generation of a syzkaller seed.
 Your goal is to reach a specific target PC.
@@ -68,12 +68,13 @@ and work more efficiently. Do NOT ask it to perform
 narrow or specific lookups like 'query what is in xyz.txt'
 or 'search for syz_fs_mount'.
 2. 'code-fixer': Once you have a syzlang program, use this tool to debug it.
-The tool will repeatedly execute the program until it has no compilation or call errors,
-and will return the ExecutionCachedID.
+The tool will repeatedly execute the program until it has no compilation or unacceptable call errors,
+and will return the ExecutionCachedID or report that it gave up.
 If you have chosen a test seed to use, you MUST pass it to this tool via BaseTestSeed.
 IMPORTANT: If the target PC is inside an error path (e.g. if the path to the PC requires
-a syscall to fail or return an error), you must set IgnoreCallErrors=true when calling code-fixer,
-so that it doesn't try to fix expected call errors.
+a syscall to fail or return an error), you must describe which call errors are expected/acceptable
+in 'AcceptableCallErrorsDescription' when calling code-fixer, so that it doesn't try to fix them.
+Unacceptable errors (such as ENOSYS/Function not implemented on critical paths) will not be ignored.
 3. 'read-syz-spec' and 'syz-grepper': Use these tools to search and read syzlang specifications
 (xxx.txt) and test seeds (test/).
 (CRITICAL INSTRUCTION) DO NOT try to use syz-grepper and read-syz-spec for Linux files, headers,
@@ -90,17 +91,40 @@ You only need to know what they set up, for which you can utilize the 'seedgen-a
 These test seeds will then be prepended to the program you generated to provide you with
 the necessary setups.
 To use syscalls or setup devices more conveniently, you should look for pseudo syscalls starting
-with ` + "`" + `long syz_*` + "`" + ` in the executor header files (under executor/ directory).
+with "long syz_*" in the executor header files (under executor/ directory).
 Using these pseudo syscalls in your syzlang program can be much more convenient than using the raw syscalls.
 4. 'get-corpus-programs': Use this tool to query if any existing syzkaller corpus programs
 reach the target function. This can provide extremely valuable guidance on how to set up the kernel state or 
 invoke the correct syscalls to reach a particular function.
 
+CRITICAL SYZLANG CONSTRAINTS:
+- Program Structure: Syzlang programs must contain ONLY system call invocations and variable assignments.
+  Assume all types, structs, and resources are already defined.
+  Never define custom types, structs, or resources inline.
+` + syzlang.SyzlangSyntaxConstraints + `
+- Finding Resources: Search for the resource identifier itself (e.g., fd_camx).
+  The "resource" keyword is used exactly once at declaration and should not be included in search queries.
+- Resource Producers: Valid producers use the resource as a syscall return type,
+  or within a struct field marked (out) or ptr[out, ...].
+  Struct fields marked opt or inside unions cannot be producers.
+- Resource Consumers: Valid consumers use the resource as an input argument to a syscall
+  or inside a struct field marked (in).
+- Go Source Files: Do NOT attempt to read Go source files (e.g. *.go files in prog/ or pkg/)
+  to reverse-engineer validation rules or syscall syntax. This consumes tokens and causes goal distraction.
+  Consult docs/syscall_descriptions_syntax.md instead using 'read-syz-spec'.
+
+` + syzlang.SandboxConstraints + `
+
 Workflow:
 1. Read the Target details, previous attempts, and any Judge failure summaries from the prompt.
 2. Loop internally to find a program that reaches the target PC:
-   a. Formulate a syzlang program.
-   b. Call 'code-fixer' to debug and execute it, obtaining an ExecutionCachedID.
+   a. Formulate a syzlang program. You may try out you ideas by formulating a plausible program.
+   b. Call 'code-fixer' to debug and execute it.
+      - If code-fixer returns CodeFixerGiveUp = true, read its CodeFixerReason. If it gave up due to environment
+        or setup failure (e.g. ENOSYS on critical virtualization syscalls), you must NOT loop/retry. You must
+        either try a completely different strategy (e.g. without KVM, or a different base seed), or give up
+        by calling 'set-results' with GeneratorGiveUp=true.
+      - Otherwise, obtain the ExecutionCachedID.
    c. Call 'check-pc-reached' with the ExecutionCachedID to verify if the target PC was reached.
    d. If reached is true:
       - Success! Call 'set-results' with this ExecutionCachedID and end your execution.
@@ -108,24 +132,7 @@ Workflow:
       - Call 'execution-summarizer' with the ExecutionCachedID to get a detailed failure summary.
       - Use the failure summary details to formulate a new (improved) program, and repeat from step (a).
 3. If you decide to give up entirely (e.g., after multiple attempts or if target is unreachable),
-   call 'set-results' with GeneratorGiveUp=true and a reason.
-
-CRITICAL SYZLANG CONSTRAINTS:
-- Program Structure: Syzlang programs must contain ONLY system call invocations and variable assignments. ` +
-		`Assume all types, structs, and resources are already defined. ` +
-		`Never define custom types, structs, or resources inline.
-- String Literals: Use single quotes for text, filenames, and device paths. ` +
-		`Null-terminate C-strings with \x00 (e.g., '/dev/kvm\x00').
-- Escaping: The only valid escape sequences inside strings are \x (hex) and \\ (backslash). ` +
-		`Escaping forward slashes (\/) or dots (\.) causes syntax errors.
-- Byte Payloads: Use double quotes ("...") EXCLUSIVELY for raw hexadecimal sequences.
-- Finding Resources: Search for the resource identifier itself (e.g., fd_camx). ` +
-		`The ` + "`resource`" + ` keyword is used exactly once at declaration and should not be included in search queries.
-- Resource Producers: Valid producers use the resource as a syscall return type, ` +
-		`or within a struct field marked (out) or ptr[out, ...]. ` +
-		`Struct fields marked opt or inside unions cannot be producers.
-- Resource Consumers: Valid consumers use the resource as an input argument to a syscall ` +
-		`or inside a struct field marked (in).`,
+   call 'set-results' with GeneratorGiveUp=true and a reason.`,
 	Prompt: `Target File: {{.File}}
 Target Line: {{.Line}}
 Target Function: {{.FunctionName}}

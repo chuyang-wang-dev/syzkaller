@@ -13,13 +13,15 @@ import (
 )
 
 type CodeFixerArgs struct {
-	BaseTestSeed     string `jsonschema:"Optional path to a test seed file. MUST be provided if requested by generator."`
-	SyzProgram       string `jsonschema:"The syzlang program that needs debugging."`
-	IgnoreCallErrors bool   `jsonschema:"Ignore syscall execution call errors if target is in an error path."`
+	BaseTestSeed                    string `jsonschema:"Base seed path. MUST be provided if requested."`
+	SyzProgram                      string `jsonschema:"The syzlang program that needs debugging."`
+	AcceptableCallErrorsDescription string `jsonschema:"Allowed call errors (e.g. EINVAL on ioctl)."`
 }
 
 type CodeFixerResult struct {
-	ExecutionCachedID string `jsonschema:"Cached execution ID of the successful run."`
+	ExecutionCachedID string `jsonschema:"Successful execution cached ID. Empty if giving up."`
+	CodeFixerGiveUp   bool   `jsonschema:"Set true if program cannot be fixed."`
+	CodeFixerReason   string `jsonschema:"Reason for giving up."`
 	Program           string `jsonschema:"Leave this empty. It will be replaced automatically."`
 	BaseTestSeed      string `jsonschema:"Leave this empty. It will be replaced automatically."`
 	ProgramDiff       string `jsonschema:"Leave this empty. It will be replaced automatically."`
@@ -31,9 +33,15 @@ var CodeFixer = &aflow.StructuredLLMTool[struct{}, CodeFixerArgs, CodeFixerResul
 	ValidatedOutputs: func(
 		ctx *aflow.Context, state struct{}, args CodeFixerArgs, res CodeFixerResult,
 	) (CodeFixerResult, error) {
+		if res.CodeFixerGiveUp {
+			if res.CodeFixerReason == "" {
+				return res, aflow.BadCallError("must provide CodeFixerReason if giving up")
+			}
+			return res, nil
+		}
 		res.ExecutionCachedID = strings.TrimSpace(res.ExecutionCachedID)
 		if res.ExecutionCachedID == "" {
-			return res, aflow.BadCallError("returned ExecutionCachedID cannot be empty")
+			return res, aflow.BadCallError("returned ExecutionCachedID cannot be empty if not giving up")
 		}
 		_, finalProg, err := crash.LoadSeedProgramDetails(ctx, res.ExecutionCachedID)
 		if err != nil {
@@ -53,34 +61,39 @@ var CodeFixer = &aflow.StructuredLLMTool[struct{}, CodeFixerArgs, CodeFixerResul
 		"StaticDefinitions": reflect.TypeFor[string](),
 	},
 	Description: "A subagent tool that takes a syzlang program and repeatedly executes it " +
-		"until it has no compilation or runtime call errors (e.g. EINVAL). " +
-		"If IgnoreCallErrors is set to true, it will ignore execution call errors " +
-		"and only fix compilation/syntax errors. Returns the ExecutionCachedID of the run.",
+		"until it has no compilation or unacceptable runtime call errors. " +
+		"It can handle expected call errors described by the parent, but will fail/give up on unexpected/unfixable errors.",
 	Instruction: "You are an expert syzkaller seed debugger.\n" +
 		"The parent Generator has provided an initial syzlang program to reach the target.\n" +
 		"You may also be provided with a Base Test Seed path (e.g. test/vusb_cdc_ecm) which sets up the environment.\n" +
 		"These test seeds are not for you to understand in detail, but only to set up some environment " +
 		"like devices or file system.\n" +
-		"Your job is ONLY to debug any syntax/compilation or call errors in the provided syzlang program.\n" +
+		"Your job is ONLY to debug any syntax/compilation or unacceptable call errors in the provided syzlang program.\n" +
 		"Do NOT generate new logic to reach something or debug why something is not reached.\n" +
-		"If the seed executes successfully (i.e. '{{.toolExecuteSeed}}' returns an ExecutionCachedID and " +
-		"either CallErrors is empty or you are instructed to ignore call errors), " +
+		"You have been provided with an 'AcceptableCallErrorsDescription'. " +
+		"Any call error returned by '{{.toolExecuteSeed}}' that matches this description " +
+		"is acceptable/expected and can be ignored.\n" +
+		"All other call errors (e.g. EFAULT, EINVAL, or ENOSYS) not matching this description " +
+		"are unacceptable, and you MUST attempt to fix them.\n" +
+		"If the seed executes successfully (i.e. all compilation/syntax errors are resolved, " +
+		"and any remaining call errors match AcceptableCallErrorsDescription), " +
 		"you MUST immediately yield by returning the ExecutionCachedID as your final reply. " +
-		"DO NOT call any other tool (e.g. '{{.toolSyzGrepper}}' or '{{.toolReadSyzSpec}}') to double check or verify. " +
-		"It is NOT your job to reason, verify, or simplify the program. " +
-		"Do NOT ask yourself if you can simplify it further.\n" +
+		"DO NOT call any other tool to double check or verify. " +
+		"It is NOT your job to reason, verify, or simplify the program.\n" +
+		"If you encounter unacceptable call errors (such as ENOSYS/Function not implemented, " +
+		"or unexpected errors) that cannot be fixed (e.g. due to VM/environment limits), " +
+		"you MUST set CodeFixerGiveUp = true and provide a detailed reason in CodeFixerReason.\n" +
 		"You MUST:\n" +
 		"1. Execute the syzlang program using '{{.toolExecuteSeed}}'. " +
-		"(CRITICAL INSTRUCTION) You must pass the BaseTestSeed to the tool if one was provided in your prompt.\n" +
-		"   Any errors in the base test seed will be returned separately. Do NOT try to fix base test seed " +
-		"errors, they indicate environment failures.\n" +
-		"   The 'Index' of the CallErrors returned are 0-based and relative ONLY to the generated syzlang " +
-		"program you are debugging.\n" +
-		"2. If there are syntax errors or call errors (e.g. EFAULT, EINVAL), fix them\n" +
+		"(CRITICAL INSTRUCTION) You must pass the BaseTestSeed to the tool if one was provided in your prompt. " +
+		"You should prefer keeping it, but you are allowed to change or swap it.\n" +
+		"   Any errors in the base test seed indicate environment setup issues. " +
+		"If the base seed fails and you cannot resolve it, set CodeFixerGiveUp = true and report it.\n" +
+		"2. If there are syntax errors or unacceptable call errors, fix them " +
 		"using '{{.toolReadSyzSpec}}' and '{{.toolSyzGrepper}}' to ensure arguments match expected descriptions.\n" +
-		"3. Execute again until you get one successful execution " +
-		"(i.e. no compiler errors, and also no call errors unless you are instructed to ignore them).\n" +
-		"4. Provide the ExecutionCachedID as your final text reply.\n" +
+		"3. Execute again until you get a successful execution or decide to give up.\n" +
+		"4. If successful, provide the ExecutionCachedID as your final text reply. " +
+		"If giving up, set CodeFixerGiveUp = true and provide CodeFixerReason.\n" +
 		"Do NOT attempt to verify PC coverage, diagnose divergence, or simplify the program. " +
 		"That will be handled by the pipeline.\n\n" +
 		"CRITICAL SYZLANG CONSTRAINTS:\n" +
@@ -92,11 +105,11 @@ var CodeFixer = &aflow.StructuredLLMTool[struct{}, CodeFixerArgs, CodeFixerResul
 		"- Program Structure: Syzlang programs must contain ONLY system call invocations and variable assignments. " +
 		"Assume all types, structs, and resources are already defined. " +
 		"Never define custom types, structs, or resources inline.\n" +
-		"- String Literals: Use single quotes for text, filenames, and device paths. " +
-		"Null-terminate C-strings with \\x00 (e.g., '/dev/kvm\\x00').\n" +
-		"- Escaping: The only valid escape sequences inside strings are \\x (hex) and \\\\ (backslash). " +
-		"Escaping forward slashes (\\/) or dots (\\.) causes syntax errors.\n" +
-		"- Byte Payloads: Use double quotes (\"...\") EXCLUSIVELY for raw hexadecimal sequences.\n\n" +
+		SyzlangSyntaxConstraints + "\n\n" +
+		"- Go Source Files: Do NOT attempt to read Go source files (e.g. *.go files in prog/ or pkg/) " +
+		"to reverse-engineer validation rules or syscall syntax. This consumes tokens and causes goal distraction. " +
+		"Consult docs/syscall_descriptions_syntax.md instead using 'read-syz-spec'.\n\n" +
+		SandboxConstraints + "\n\n" +
 		"===\n{{.DocProgramSyntax}}\n===\n\n" +
 		"Document about syzlang system call descriptions syntax:\n" +
 		"===\n{{.DocSyscallDescriptionsSyntax}}\n===\n\n" +
@@ -130,16 +143,12 @@ var CodeFixer = &aflow.StructuredLLMTool[struct{}, CodeFixerArgs, CodeFixerResul
 			"- Set Stop = false if the subagent is introducing new changes, trying new paths, " +
 			"or making progress towards resolving the errors.",
 	},
-	Prompt: `{{if .IgnoreCallErrors}}CRITICAL INSTRUCTION: You are debugging a program where ` +
-		`the target PC is expected to be in an error path. Thus, call errors (syscalls returning ` +
-		`an error like EINVAL, EFAULT, etc.) are expected and acceptable.
-` +
-		`Do NOT try to fix call errors, and do NOT fail.
-` +
-		`You MUST treat the execution as successful even if there are call errors, as long as ` +
-		`it compiles successfully (i.e. you got an ExecutionCachedID as response).
-` +
-		`Immediately yield by returning the ExecutionCachedID of the run.
+	Prompt: `{{if .AcceptableCallErrorsDescription}}Acceptable/Expected Call Errors Description:
+{{.AcceptableCallErrorsDescription}}
+If any call error matching this description occurs, it is acceptable. Do NOT try to fix it.
+All other call errors NOT matching this description are unacceptable, and you MUST fix them or give up.
+
+{{else}}All call errors are unacceptable. You must fix all call errors.
 
 {{end}}{{if .BaseTestSeed}}Base Test Seed: {{.BaseTestSeed}}
 
