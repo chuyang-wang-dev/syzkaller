@@ -224,7 +224,9 @@ func (arg *DataArg) validate(ctx *validCtx, dir Dir) error {
 		}
 	case BufferFilename:
 		if !ctx.isUnsafe && escapingFilename(string(arg.data)) {
-			return fmt.Errorf("escaping filename %q", arg.data)
+			return fmt.Errorf("escaping filename %q: "+
+				"absolute paths starting with '/' or relative paths starting with '..' are not allowed as they escape the sandbox",
+				arg.data)
 		}
 	}
 	return nil
