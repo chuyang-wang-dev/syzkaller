@@ -231,6 +231,18 @@ func (ctx *Context) StateMap() map[string]any {
 	return ctx.state
 }
 
+// RunWithState executes the given function with the context's state temporarily swapped out.
+// This is useful for running sub-agents in an isolated state scope, preventing their
+// internal variables and tool outputs from leaking into the parent state.
+func (ctx *Context) RunWithState(state map[string]any, fn func(*Context) error) error {
+	oldState := ctx.state
+	ctx.state = state
+	defer func() {
+		ctx.state = oldState
+	}()
+	return fn(ctx)
+}
+
 func (ctx *Context) Cache(typ, desc string, populate func(string) error) (string, error) {
 	dir, err := ctx.cache.Create(typ, desc, populate)
 	if err != nil {

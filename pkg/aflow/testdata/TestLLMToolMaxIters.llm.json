@@ -67,7 +67,7 @@
 			"systemInstruction": {
 				"parts": [
 					{
-						"text": "researcher instruction\nPrefer calling several tools at the same time to save round-trips.\n"
+						"text": "researcher instruction\nPrefer calling several tools at the same time to save round-trips.\n\n\nUse set-results tool to provide results of the analysis.\nIt must be called exactly once before the final reply.\nIgnore results of this tool.\n"
 					}
 				],
 				"role": "user"
@@ -94,6 +94,40 @@
 							},
 							"responseJsonSchema": {
 								"type": "object",
+								"additionalProperties": false
+							}
+						}
+					]
+				},
+				{
+					"functionDeclarations": [
+						{
+							"description": "Use this tool to provide results of the analysis.",
+							"name": "set-results",
+							"parametersJsonSchema": {
+								"type": "object",
+								"properties": {
+									"Answer": {
+										"type": "string",
+										"description": "Answer to your question."
+									}
+								},
+								"required": [
+									"Answer"
+								],
+								"additionalProperties": false
+							},
+							"responseJsonSchema": {
+								"type": "object",
+								"properties": {
+									"Answer": {
+										"type": "string",
+										"description": "Answer to your question."
+									}
+								},
+								"required": [
+									"Answer"
+								],
 								"additionalProperties": false
 							}
 						}
@@ -781482,7 +781516,7 @@
 			"systemInstruction": {
 				"parts": [
 					{
-						"text": "researcher instruction\nPrefer calling several tools at the same time to save round-trips.\n"
+						"text": "researcher instruction\nPrefer calling several tools at the same time to save round-trips.\n\n\nUse set-results tool to provide results of the analysis.\nIt must be called exactly once before the final reply.\nIgnore results of this tool.\n"
 					}
 				],
 				"role": "user"
@@ -787754,96 +787788,6 @@
 				"parts": [
 					{
 						"text": "\nProvide a best-effort answer to the original question with all of the information\nyou have so far without calling any more tools!\nIMPORTANT: Your tool calling ability is currently disabled to save context size.\nDo NOT attempt to output JSON to call tools. Base your response strictly on\nthe text information you have already gathered.\n"
-					}
-				],
-				"role": "user"
-			}
-		]
-	},
-	{
-		"Model": "model",
-		"Config": {
-			"systemInstruction": {
-				"parts": [
-					{
-						"text": "Instruction\nPrefer calling several tools at the same time to save round-trips.\n"
-					}
-				],
-				"role": "user"
-			},
-			"temperature": 0.3,
-			"tools": [
-				{
-					"functionDeclarations": [
-						{
-							"description": "researcher description",
-							"name": "researcher",
-							"parametersJsonSchema": {
-								"type": "object",
-								"properties": {
-									"Question": {
-										"type": "string",
-										"description": "Question you have."
-									}
-								},
-								"required": [
-									"Question"
-								],
-								"additionalProperties": false
-							},
-							"responseJsonSchema": {
-								"type": "object",
-								"properties": {
-									"Answer": {
-										"type": "string",
-										"description": "Answer to your question."
-									}
-								},
-								"required": [
-									"Answer"
-								],
-								"additionalProperties": false
-							}
-						}
-					]
-				}
-			],
-			"thinkingLevel": 3,
-			"includeThoughts": true
-		},
-		"Request": [
-			{
-				"parts": [
-					{
-						"text": "Prompt"
-					}
-				],
-				"role": "user"
-			},
-			{
-				"parts": [
-					{
-						"functionCall": {
-							"id": "id0",
-							"args": {
-								"Question": "What do you think?"
-							},
-							"name": "researcher"
-						}
-					}
-				],
-				"role": "model"
-			},
-			{
-				"parts": [
-					{
-						"functionResponse": {
-							"id": "id0",
-							"response": {
-								"Answer": "Nothing."
-							},
-							"name": "researcher"
-						}
 					}
 				],
 				"role": "user"

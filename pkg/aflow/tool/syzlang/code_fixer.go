@@ -10,9 +10,33 @@ type CodeFixerArgs struct {
 	IgnoreCallErrors bool   `jsonschema:"Ignore syscall execution call errors if target is in an error path."`
 }
 
-var CodeFixer = &aflow.LLMTool[struct{}, CodeFixerArgs]{
-	Name:     "code-fixer",
-	Model:    aflow.Temporary35FlashOnlyModel,
+type CodeFixerResult struct {
+	ExecutionCachedID string `jsonschema:"Cached execution ID of the successful run."`
+	Program           string `jsonschema:"Leave this empty. It will be replaced automatically."`
+	BaseTestSeed      string `jsonschema:"Leave this empty. It will be replaced automatically."`
+}
+
+var CodeFixer = &aflow.StructuredLLMTool[struct{}, CodeFixerArgs, CodeFixerResult]{
+	Name:  "code-fixer",
+	Model: aflow.Temporary35FlashOnlyModel,
+	ValidatedOutputs: func(
+		ctx *aflow.Context, state struct{}, args CodeFixerArgs, res CodeFixerResult,
+	) (CodeFixerResult, error) {
+		res.ExecutionCachedID = strings.TrimSpace(res.ExecutionCachedID)
+		if res.ExecutionCachedID == "" {
+			return res, aflow.BadCallError("returned ExecutionCachedID cannot be empty")
+		}
+		_, finalProg, err := crash.LoadSeedProgramDetails(ctx, res.ExecutionCachedID)
+		if err != nil {
+			return res, aflow.BadCallError("invalid ExecutionCachedID %q: %v. "+
+				"You must return the ExecutionCachedID of a successful run.", res.ExecutionCachedID, err)
+		}
+		res.Program = finalProg
+		if res.BaseTestSeed == "" {
+			res.BaseTestSeed = args.BaseTestSeed
+		}
+		return res, nil
+	},
 	TaskType: aflow.FormalReasoningTask,
 	Description: "A subagent tool that takes a syzlang program and repeatedly executes it " +
 		"until it has no compilation or runtime call errors (e.g. EINVAL). " +

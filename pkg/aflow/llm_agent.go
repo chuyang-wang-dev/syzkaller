@@ -50,6 +50,9 @@ type LLMAgent struct {
 	Prompt string
 	// Set of tools for the agent to use.
 	Tools []Tool
+	// Whether this agent is being run as a sub-agent by another agent.
+	// Used to control truncation behavior (sub-agents can be forced to answer now).
+	SubAgent bool
 	// InitialMessages overrides the default single-prompt initialization of a.req.
 	InitialMessages func(*Context) ([]llmMessage, error)
 
@@ -328,7 +331,7 @@ func (a *LLMAgent) executeOne(ctx *Context, candidate int) (string, map[string]a
 }
 
 func (a *agentSession) tryAnswerNow(cfg *backend.GenerateConfig, overflow bool) bool {
-	if a.Reply != llmToolReply || len(a.req) < 3 || a.answerNow {
+	if !a.SubAgent || len(a.req) < 3 || a.answerNow {
 		return false
 	}
 	a.answerNow = true

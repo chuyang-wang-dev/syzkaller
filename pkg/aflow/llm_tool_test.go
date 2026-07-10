@@ -67,7 +67,15 @@ func TestLLMTool(t *testing.T) {
 				},
 			},
 			// Sub-agent returns result.
-			backend.Part{Text: "Nothing."},
+			backend.Part{
+				FunctionCall: &backend.FunctionCall{
+					ID:   "id_out1",
+					Name: "set-results",
+					Args: map[string]any{
+						"Answer": "Nothing.",
+					},
+				},
+			},
 			// Repeat the same one more time.
 			backend.Part{
 				FunctionCall: &backend.FunctionCall{
@@ -98,7 +106,15 @@ func TestLLMTool(t *testing.T) {
 				},
 			},
 			&backend.InputTokenOverflowError{Err: fmt.Errorf("the input token count exceeds the maximum")},
-			backend.Part{Text: "Still nothing."},
+			backend.Part{
+				FunctionCall: &backend.FunctionCall{
+					ID:   "id_out2",
+					Name: "set-results",
+					Args: map[string]any{
+						"Answer": "Still nothing.",
+					},
+				},
+			},
 			// Main returns result.
 			backend.Part{Text: "YES"},
 		},
@@ -137,13 +153,13 @@ func TestLLMToolMaxIters(t *testing.T) {
 			},
 		})
 	}
-	replies = append(replies,
-		// Sub-agent returns result.
-		backend.Part{Text: "Nothing."},
-		// Main returns result.
-		backend.Part{Text: "YES"},
-	)
-	testFlow[struct{}, outputs](t, nil, map[string]any{"Reply": "YES"},
+	// The agent hits maxLLMIterations and attempts to answer now.
+	// We provide an invalid reply so that it fails to produce structured output,
+	// terminating the loop and returning the max iterations limit error.
+	replies = append(replies, &backend.Part{Text: "I give up!"})
+	testFlow[struct{}, outputs](t, nil,
+		"tool researcher failed: error: agent reached max iterations limit (250)\n"+
+			"args: map[Question:What do you think?]",
 		&LLMAgent{
 			Reply: "Reply",
 			Tools: []Tool{
@@ -163,6 +179,73 @@ func TestLLMToolMaxIters(t *testing.T) {
 			},
 		},
 		replies,
+		nil,
+	)
+}
+
+func TestLLMToolValidation(t *testing.T) {
+	type outputs struct {
+		Reply string
+	}
+
+	type testResult struct {
+		Answer string `jsonschema:"Answer"`
+	}
+
+	testFlow[struct{}, outputs](t, nil, map[string]any{"Reply": "YES"},
+		&LLMAgent{
+			Reply: "Reply",
+			Tools: []Tool{
+				&StructuredLLMTool[struct{}, DefaultLLMArgs, testResult]{
+					Name:        "researcher",
+					Model:       "sub-agent-model",
+					TaskType:    FormalReasoningTask,
+					Description: "researcher description",
+					Instruction: "researcher instruction",
+					Prompt:      `{{.Question}}`,
+					ValidatedOutputs: func(ctx *Context, state struct{}, args DefaultLLMArgs, res testResult) (testResult, error) {
+						if res.Answer == "Bad reply" {
+							return res, BadCallError("this reply is bad")
+						}
+						return res, nil
+					},
+				},
+			},
+		},
+		[]any{
+			// Main agent calls the tool sub-agent.
+			&backend.Part{
+				FunctionCall: &backend.FunctionCall{
+					ID:   "id0",
+					Name: "researcher",
+					Args: map[string]any{
+						"Question": "What do you think?",
+					},
+				},
+			},
+			// Sub-agent returns bad result.
+			&backend.Part{
+				FunctionCall: &backend.FunctionCall{
+					ID:   "id1",
+					Name: "set-results",
+					Args: map[string]any{
+						"Answer": "Bad reply",
+					},
+				},
+			},
+			// Sub-agent returns good result.
+			&backend.Part{
+				FunctionCall: &backend.FunctionCall{
+					ID:   "id2",
+					Name: "set-results",
+					Args: map[string]any{
+						"Answer": "Good reply",
+					},
+				},
+			},
+			// Main returns result.
+			backend.Part{Text: "YES"},
+		},
 		nil,
 	)
 }
