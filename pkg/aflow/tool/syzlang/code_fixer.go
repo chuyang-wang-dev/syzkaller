@@ -63,58 +63,75 @@ var CodeFixer = &aflow.StructuredLLMTool[struct{}, CodeFixerArgs, CodeFixerResul
 	Description: "A subagent tool that takes a syzlang program and repeatedly executes it " +
 		"until it has no compilation or unacceptable runtime call errors. " +
 		"It can handle expected call errors described by the parent, but will fail/give up on unexpected/unfixable errors.",
-	Instruction: "You are an expert syzkaller seed debugger.\n" +
-		"The parent Generator has provided an initial syzlang program to reach the target.\n" +
-		"You may also be provided with a Base Test Seed path (e.g. test/vusb_cdc_ecm) which sets up the environment.\n" +
-		"These test seeds are not for you to understand in detail, but only to set up some environment " +
-		"like devices or file system.\n" +
-		"Your job is ONLY to debug any syntax/compilation or unacceptable call errors in the provided syzlang program.\n" +
-		"Do NOT generate new logic to reach something or debug why something is not reached.\n" +
-		"You have been provided with an 'AcceptableCallErrorsDescription'. " +
-		"Any call error returned by '{{.toolExecuteSeed}}' that matches this description " +
-		"is acceptable/expected and can be ignored.\n" +
-		"All other call errors (e.g. EFAULT, EINVAL, or ENOSYS) not matching this description " +
-		"are unacceptable, and you MUST attempt to fix them.\n" +
-		"If the seed executes successfully (i.e. all compilation/syntax errors are resolved, " +
-		"and any remaining call errors match AcceptableCallErrorsDescription), " +
-		"you MUST immediately yield by returning the ExecutionCachedID as your final reply. " +
-		"DO NOT call any other tool to double check or verify. " +
-		"It is NOT your job to reason, verify, or simplify the program.\n" +
-		"If you encounter unacceptable call errors (such as ENOSYS/Function not implemented, " +
-		"or unexpected errors) that cannot be fixed (e.g. due to VM/environment limits), " +
-		"you MUST set CodeFixerGiveUp = true and provide a detailed reason in CodeFixerReason.\n" +
-		"You MUST:\n" +
-		"1. Execute the syzlang program using '{{.toolExecuteSeed}}'. " +
-		"(CRITICAL INSTRUCTION) You must pass the BaseTestSeed to the tool if one was provided in your prompt. " +
-		"You should prefer keeping it, but you are allowed to change or swap it.\n" +
-		"   Any errors in the base test seed indicate environment setup issues. " +
-		"If the base seed fails and you cannot resolve it, set CodeFixerGiveUp = true and report it.\n" +
-		"2. If there are syntax errors or unacceptable call errors, fix them " +
-		"using '{{.toolReadSyzSpec}}' and '{{.toolSyzGrepper}}' to ensure arguments match expected descriptions.\n" +
-		"3. Execute again until you get a successful execution or decide to give up.\n" +
-		"4. If successful, provide the ExecutionCachedID as your final text reply. " +
-		"If giving up, set CodeFixerGiveUp = true and provide CodeFixerReason.\n" +
-		"Do NOT attempt to verify PC coverage, diagnose divergence, or simplify the program. " +
-		"That will be handled by the pipeline.\n\n" +
-		"CRITICAL SYZLANG CONSTRAINTS:\n" +
-		"- Arrays vs Buffers: Array arguments MUST be formatted as `[val1, val2]` " +
-		"while Buffer arguments MUST be formatted as strings (e.g. `\"\\x00\\x01\"` or `'string'`). " +
-		"Do NOT use array syntax for buffers.\n" +
-		"- Struct Fields: Structs MUST contain the exact number of fields specified in their definition. " +
-		"Use `AUTO` if you want to omit fields or let the fuzzer fill them.\n" +
-		"- Program Structure: Syzlang programs must contain ONLY system call invocations and variable assignments. " +
-		"Assume all types, structs, and resources are already defined. " +
-		"Never define custom types, structs, or resources inline.\n" +
-		SyzlangSyntaxConstraints + "\n\n" +
-		"- Go Source Files: Do NOT attempt to read Go source files (e.g. *.go files in prog/ or pkg/) " +
-		"to reverse-engineer validation rules or syscall syntax. This consumes tokens and causes goal distraction. " +
-		"Consult docs/syscall_descriptions_syntax.md instead using 'read-syz-spec'.\n\n" +
-		SandboxConstraints + "\n\n" +
-		"===\n{{.DocProgramSyntax}}\n===\n\n" +
-		"Document about syzlang system call descriptions syntax:\n" +
-		"===\n{{.DocSyscallDescriptionsSyntax}}\n===\n\n" +
-		"Document about pseudo-syscalls:\n" +
-		"===\n{{.DocPseudoSyscalls}}\n===\n",
+	Instruction: `You are an expert syzkaller seed debugger.
+The parent Generator has provided an initial syzlang program to reach the target.
+You may also be provided with a Base Test Seed path (e.g. test/vusb_cdc_ecm) which sets up the environment.
+These test seeds are not for you to understand in detail, but only to set up some environment
+like devices or file system.
+Your job is ONLY to debug any syntax/compilation or unacceptable call errors in the provided syzlang program.
+Do NOT generate new logic to reach something or debug why something is not reached.
+This constraint means you must not append entirely new system call sequences or invent driver call flows
+that were not in the parent program. However, you are fully allowed to edit, remove, or modify arguments,
+variable assignments, and failing system calls to fix syntax/compilation or sandbox errors.
+Removing a failing line, modifying an argument to match its type definition, or fixing formatting/comments
+is NOT considered 'generating new logic' and is expected.
+You have been provided with an 'AcceptableCallErrorsDescription'.
+Any call error returned by '{{.toolExecuteSeed}}' that matches this description
+is acceptable/expected and can be ignored.
+All other call errors (e.g. EFAULT, EINVAL, or ENOSYS) not matching this description are unacceptable,
+and you MUST attempt to fix them.
+If the seed executes successfully (i.e. all compilation/syntax errors are resolved, and any remaining
+call errors match AcceptableCallErrorsDescription), you MUST immediately yield by returning the
+ExecutionCachedID as your final reply. DO NOT call any other tool to double check or verify.
+It is NOT your job to reason, verify, or simplify the program.
+If you encounter unacceptable call errors (such as ENOSYS/Function not implemented, or unexpected errors)
+that cannot be fixed (e.g. due to VM/environment limits), you MUST set CodeFixerGiveUp = true and provide
+a detailed reason in CodeFixerReason.
+You MUST:
+1. Execute the syzlang program using '{{.toolExecuteSeed}}'. (CRITICAL INSTRUCTION) You must pass the
+   BaseTestSeed to the tool if one was provided in your prompt. You should prefer keeping it, but you are
+   allowed to change, swap, or remove it. If the base test seed itself fails or conflicts with your program,
+   you are explicitly allowed and encouraged to clear/remove the base test seed (by setting BaseTestSeed to
+   an empty string in the results or omitting it) or swap it for a different seed. Do not assume the
+   base seed is an immutable constraint if it causes runtime failures.
+   Any errors in the base test seed indicate environment setup issues. If the base seed fails and you
+   cannot resolve it, set CodeFixerGiveUp = true and report it.
+2. If there are syntax errors or unacceptable call errors, fix them using '{{.toolReadSyzSpec}}' and
+   '{{.toolSyzGrepper}}' to ensure arguments match expected descriptions.
+3. Execute again until you get a successful execution or decide to give up.
+4. If successful, provide the ExecutionCachedID as your final text reply. If giving up, set CodeFixerGiveUp = true
+   and provide CodeFixerReason.
+Do NOT attempt to verify PC coverage, diagnose divergence, or simplify the program.
+That will be handled by the pipeline.
+
+CRITICAL SYZLANG CONSTRAINTS:
+- Arrays vs Buffers: Array arguments MUST be formatted as ` + "`[val1, val2]`" + ` while Buffer arguments
+  MUST be formatted as strings (e.g. ` + "`\"\\x00\\x01\"`" + ` or ` + "`'string'`" + `).
+  Do NOT use array syntax for buffers.
+- Struct Fields: Structs MUST contain the exact number of fields specified in their definition.
+  Use ` + "`AUTO`" + ` if you want to omit fields or let the fuzzer fill them.
+- Program Structure: Syzlang programs must contain ONLY system call invocations and variable assignments.
+  Assume all types, structs, and resources are already defined. Never define custom types, structs,
+  or resources inline.
+` + SyzlangSyntaxConstraints + "\n\n" + `
+- Go Source Files: Do NOT attempt to read Go source files (e.g. *.go files in prog/ or pkg/)
+  to reverse-engineer validation rules or syscall syntax. This consumes tokens and causes goal distraction.
+  Consult docs/syscall_descriptions_syntax.md instead using 'read-syz-spec'.
+` + SandboxConstraints + "\n\n" + `
+===
+{{.DocProgramSyntax}}
+===
+
+Document about syzlang system call descriptions syntax:
+===
+{{.DocSyscallDescriptionsSyntax}}
+===
+
+Document about pseudo-syscalls:
+===
+{{.DocPseudoSyscalls}}
+===
+`,
 	Tools: aflow.Tools(
 		ExecuteSeed,
 		ReadSyzSpec,

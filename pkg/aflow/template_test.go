@@ -94,6 +94,16 @@ func TestTemplate(t *testing.T) {
 			},
 			used: []string{"foo"},
 		},
+		{
+			template: `
+				{{$lastGen := .LastFailedGeneratedSyz}}
+				{{$lastGen}}
+			`,
+			vars: map[string]reflect.Type{
+				"LastFailedGeneratedSyz": reflect.TypeFor[string](),
+			},
+			used: []string{"LastFailedGeneratedSyz"},
+		},
 	}
 	for i, test := range tests {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {

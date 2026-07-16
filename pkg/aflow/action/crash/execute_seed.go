@@ -73,6 +73,7 @@ func ExecuteSeedFunc(ctx *aflow.Context, args ExecuteSeedArgs) (string, error) {
 			return res, err
 		}
 		cfg.Timeouts.NoOutputRunningTime = 2 * time.Minute
+		cfg.Timeouts.Program = 15 * time.Second
 
 		rm, err := ctx.GetRunnerManager()
 		if errors.Is(err, aflow.ErrRunnerNotInitialized) {

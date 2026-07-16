@@ -55,20 +55,29 @@ func init() {
 				codesearcher.PrepareIndex,
 				codesearcher.ActionExtractFunction,
 				codesearcher.ActionExtractIndirectCallers,
+				SubsystemRequirementsAgent,
+				&aflow.Try{
+					Do:       EnvironmentProberAgent,
+					ErrorVar: "ProberError",
+				},
+				ActionCheckProberTerminalError,
+				ActionInitializeJournal,
 				&aflow.DoWhile{
 					While:         "ContinueLoop",
-					MaxIterations: 20,
+					MaxIterations: 10,
 					Do: aflow.Pipeline(
-						ActionPrepareFailedDetails,
+						ActionMergeJournal,
+						ActionClearIterationState,
+						StrategyRefinerAgent,
 						&aflow.Try{
 							Do:       GeneratorAgent,
 							ErrorVar: "GeneratorError",
-							Catch: aflow.Pipeline(
-								ActionFormatFailedHistory,
-								HistorySummarizerAgent,
-							),
 						},
 						ActionVerifyPCAndLoopState,
+						&aflow.If{
+							Condition: "NewExecutionCachedID",
+							Do:        syzlang.ExecutionSummarizerAgent,
+						},
 					),
 				},
 				ActionFormatOutput,
@@ -135,28 +144,26 @@ func parsePCAction(ctx *aflow.Context, args ParsePCArgs) (ParsePCResult, error) 
 }
 
 type VerifyPCAndLoopStateArgs struct {
-	ExecutionCachedID    string
-	GeneratorGiveUp      bool
-	GeneratorReason      string
-	GeneratorError       string
-	FailedHistorySummary string
-	PC                   uint64
+	ExecutionCachedID string
+	GeneratorGiveUp   bool
+	GeneratorReason   string
+	GeneratorError    string
+	PC                uint64
 }
 
 type VerifyPCAndLoopStateResult struct {
 	ContinueLoop                string
 	PCReached                   bool
 	LastFailedExecutionCachedID string
-	LastFailedHistorySummary    string
+	NewExecutionCachedID        string
 }
 
 var ActionVerifyPCAndLoopState = aflow.NewFuncAction("seedgen-verify-pc-and-loop",
 	func(ctx *aflow.Context, args VerifyPCAndLoopStateArgs) (VerifyPCAndLoopStateResult, error) {
 		if args.GeneratorError != "" {
 			res := VerifyPCAndLoopStateResult{
-				ContinueLoop:             "yes",
-				PCReached:                false,
-				LastFailedHistorySummary: args.FailedHistorySummary,
+				ContinueLoop: "yes",
+				PCReached:    false,
 			}
 			if id, ok := ctx.StateMap()["LastFailedExecutionCachedID"].(string); ok {
 				res.LastFailedExecutionCachedID = id
@@ -168,7 +175,6 @@ var ActionVerifyPCAndLoopState = aflow.NewFuncAction("seedgen-verify-pc-and-loop
 			return VerifyPCAndLoopStateResult{ContinueLoop: "", PCReached: false}, nil
 		}
 		if args.ExecutionCachedID == "" {
-			// This shouldn't happen due to GeneratorAgent output validation, but handle it safely.
 			return VerifyPCAndLoopStateResult{ContinueLoop: "yes", PCReached: false}, nil
 		}
 
@@ -184,27 +190,7 @@ var ActionVerifyPCAndLoopState = aflow.NewFuncAction("seedgen-verify-pc-and-loop
 			ContinueLoop:                "yes",
 			PCReached:                   false,
 			LastFailedExecutionCachedID: args.ExecutionCachedID,
+			NewExecutionCachedID:        args.ExecutionCachedID,
 		}
 		return res, nil
-	})
-
-type PrepareFailedDetailsArgs struct {
-	LastFailedExecutionCachedID string
-}
-
-type PrepareFailedDetailsResult struct {
-	LastFailedBaseTestSeed string
-	LastFailedGeneratedSyz string
-}
-
-var ActionPrepareFailedDetails = aflow.NewFuncAction("seedgen-prepare-failed-details",
-	func(ctx *aflow.Context, args PrepareFailedDetailsArgs) (PrepareFailedDetailsResult, error) {
-		if args.LastFailedExecutionCachedID == "" {
-			return PrepareFailedDetailsResult{}, nil
-		}
-		baseSeed, generated, err := crash.LoadSeedProgramDetails(ctx, args.LastFailedExecutionCachedID)
-		return PrepareFailedDetailsResult{
-			LastFailedBaseTestSeed: baseSeed,
-			LastFailedGeneratedSyz: generated,
-		}, err
 	})
