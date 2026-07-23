@@ -27,7 +27,7 @@ var HistorySummarizerAgent = &aflow.LLMAgent{
 		"You MUST structure your FailedHistorySummary into the following four markdown sections:\n" +
 		"1. ## FAILED STRATEGY & SYSCALL PATHS\n" +
 		"2. ## REPEATED ERRORS & STUCK LOOPS\n" +
-		"3. ## DISCARDED BASE SEEDS & SYZLANG CONSTRUCTS\n" +
+		"3. ## DISCARDED TEST SEEDS & SYZLANG CONSTRUCTS\n" +
 		"4. ## RECOMMENDED ALTERNATIVE DIRECTIONS & NEGATIVE CONSTRAINTS",
 	Prompt: `Failed Agent Name: seed-generator
 Failed Conversation History:
